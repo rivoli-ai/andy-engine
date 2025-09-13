@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>andy-engine</PackageId>
+    <Title>Andy Engine</Title>
+    <Description>Andy.Engine — core engine components for Andy.</Description>
+    <PackageIcon>andy_engine_icon.png</PackageIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../assets/andy_engine_icon.png" Pack="true" PackagePath="/" Visible="false" Condition="Exists('../../assets/andy_engine_icon.png')" />
+  </ItemGroup>
+
+</Project>
