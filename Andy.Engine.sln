@@ -11,6 +11,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{C8C25276
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Andy.Engine.Tests", "tests\Andy.Engine.Tests\Andy.Engine.Tests.csproj", "{AB9624E4-226A-4388-944C-3F52252AABBC}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{419D2ABA-0D15-4D3E-BB36-A87CDA7C4CF3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SimpleAgent", "examples\SimpleAgent\SimpleAgent.csproj", "{58D5DAA7-6B96-48F8-8427-17F2B8F6D867}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -28,9 +32,14 @@ Global
 		{AB9624E4-226A-4388-944C-3F52252AABBC}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AB9624E4-226A-4388-944C-3F52252AABBC}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AB9624E4-226A-4388-944C-3F52252AABBC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{58D5DAA7-6B96-48F8-8427-17F2B8F6D867}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{58D5DAA7-6B96-48F8-8427-17F2B8F6D867}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{58D5DAA7-6B96-48F8-8427-17F2B8F6D867}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{58D5DAA7-6B96-48F8-8427-17F2B8F6D867}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E739D706-9A74-454F-A79E-020B9B5B6158} = {479A7284-1F68-4C92-9C38-3574917094B2}
 		{AB9624E4-226A-4388-944C-3F52252AABBC} = {C8C25276-AEA8-441B-9443-7AFF7108E295}
+		{58D5DAA7-6B96-48F8-8427-17F2B8F6D867} = {419D2ABA-0D15-4D3E-BB36-A87CDA7C4CF3}
 	EndGlobalSection
 EndGlobal
