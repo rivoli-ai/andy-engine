@@ -83,7 +83,33 @@ public class LlmPlanner : IPlanner
             if (registration.IsEnabled)
             {
                 var metadata = registration.Metadata;
-                catalog.Add($"- {metadata.Name}: {metadata.Description}");
+                var toolDescription = $"- {metadata.Id}: {metadata.Description}";
+
+                if (metadata.Parameters.Count > 0)
+                {
+                    toolDescription += "\n  Parameters:";
+                    foreach (var param in metadata.Parameters)
+                    {
+                        var paramDesc = $"\n    - {param.Name} ({param.Type})";
+                        if (param.Required)
+                            paramDesc += " [required]";
+                        paramDesc += $": {param.Description}";
+
+                        if (param.AllowedValues != null && param.AllowedValues.Count > 0)
+                        {
+                            paramDesc += $" (allowed: {string.Join(", ", param.AllowedValues)})";
+                        }
+
+                        if (param.DefaultValue != null)
+                        {
+                            paramDesc += $" (default: {param.DefaultValue})";
+                        }
+
+                        toolDescription += paramDesc;
+                    }
+                }
+
+                catalog.Add(toolDescription);
             }
         }
 
@@ -116,17 +142,90 @@ public class LlmPlanner : IPlanner
 
         var response = await _llmProvider.CompleteAsync(request, cancellationToken);
 
-        if (response.Content == null)
+        if (response?.AssistantMessage?.Content == null)
             throw new InvalidOperationException("LLM returned null content");
 
-        return JsonNode.Parse(response.Content) ??
-            throw new InvalidOperationException("Failed to parse LLM response as JSON");
+        var content = response.AssistantMessage.Content;
+        _logger?.LogWarning("Raw LLM response: '{Response}'", content);
+
+        // Clean up markdown-wrapped JSON if present
+        content = content.Trim();
+        if (content.StartsWith("```"))
+        {
+            // Remove markdown code block wrapper
+            var lines = content.Split('\n');
+            var startIdx = 0;
+            var endIdx = lines.Length - 1;
+
+            // Find start of JSON (skip ```json or ```)
+            if (lines[0].StartsWith("```"))
+                startIdx = 1;
+
+            // Find end (skip closing ```)
+            if (endIdx > 0 && lines[endIdx].Trim() == "```")
+                endIdx--;
+
+            content = string.Join('\n', lines[startIdx..(endIdx + 1)]);
+        }
+
+        _logger?.LogInformation("LLM response (cleaned): '{Response}'", content);
+
+        try
+        {
+            var parsed = JsonNode.Parse(content);
+            _logger?.LogInformation("Parsed JSON successfully: {Json}", parsed?.ToJsonString());
+            return parsed ?? throw new InvalidOperationException("Failed to parse LLM response as JSON");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Failed to parse JSON: {Error}. Content was: '{Content}'", ex.Message, content);
+            throw;
+        }
     }
 
-    private PlannerDecision ParseDecision(JsonNode response)
+    internal PlannerDecision ParseDecision(JsonNode response)
     {
-        var action = response["action"]?.GetValue<string>() ??
-            throw new InvalidOperationException("Missing 'action' field in response");
+        // Try to get action field, with fallback logic
+        var action = response["action"]?.GetValue<string>();
+
+        if (string.IsNullOrEmpty(action))
+        {
+            _logger?.LogWarning("No 'action' field found. Response: {Response}", response.ToJsonString());
+
+            // Fallback: Check if response has "call_tool" field (alternative format)
+            var callTool = response["call_tool"];
+            if (callTool != null)
+            {
+                var toolName = callTool["name"]?.GetValue<string>();
+                var args = callTool["args"];
+
+                _logger?.LogInformation("Found call_tool format, converting to standard format");
+                _logger?.LogInformation("Tool name from LLM: {ToolName}, Args: {Args}", toolName, args?.ToJsonString());
+
+                // Map tool names
+                var mappedToolName = toolName switch
+                {
+                    "Date Time Tool" => "datetime_tool",
+                    "Encoding Tool" => "encoding_tool",
+                    _ => toolName?.ToLowerInvariant().Replace(" ", "_")
+                };
+
+                if (mappedToolName == "datetime_tool" && (args == null || !args.AsObject().Any()))
+                {
+                    args = JsonNode.Parse("""{"operation": "now"}""");
+                    _logger?.LogInformation("Applied default args for datetime_tool: {Args}", args.ToJsonString());
+                }
+
+                var finalCall = new EngineToolCall(
+                    mappedToolName ?? "unknown_tool",
+                    args ?? JsonNode.Parse("{}")
+                );
+                _logger?.LogWarning("Creating CallToolDecision: Tool={ToolName}, Args={Args}", finalCall.ToolName, finalCall.Args.ToJsonString());
+                return new CallToolDecision(finalCall);
+            }
+
+            throw new InvalidOperationException($"Missing 'action' field in response: {response.ToJsonString()}");
+        }
 
         return action switch
         {

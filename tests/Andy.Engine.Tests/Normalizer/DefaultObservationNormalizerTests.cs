@@ -117,10 +117,12 @@ public class DefaultObservationNormalizerTests
         // Arrange
         var result = new ToolResult(
             Ok: false,
+            Data: null,
             ErrorCode: ToolErrorCode.Timeout,
             ErrorDetails: "Request timed out",
-            Latency: TimeSpan.FromSeconds(30),
-            Attempt: 1
+            SchemaValidated: false,
+            Attempt: 1,
+            Latency: TimeSpan.FromSeconds(30)
         );
 
         // Act
@@ -136,10 +138,12 @@ public class DefaultObservationNormalizerTests
         // Arrange
         var result = new ToolResult(
             Ok: false,
+            Data: null,
             ErrorCode: ToolErrorCode.InvalidInput,
             ErrorDetails: "Missing required field",
-            Latency: TimeSpan.FromMilliseconds(10),
-            Attempt: 1
+            SchemaValidated: false,
+            Attempt: 1,
+            Latency: TimeSpan.FromMilliseconds(10)
         );
 
         // Act

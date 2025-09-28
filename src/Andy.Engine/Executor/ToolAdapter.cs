@@ -61,9 +61,13 @@ public sealed class ToolAdapter : IExecutor
         }
 
         // Validate input
+        _logger?.LogDebug("Validating args for tool {ToolName}: {Args}", call.ToolName, call.Args?.ToJsonString());
+        _logger?.LogDebug("Using schema: {Schema}", spec.InputSchema?.ToJsonString());
+
         var (inputOk, inputError) = _validator.Validate(call.Args, spec.InputSchema);
         if (!inputOk)
         {
+            _logger?.LogError("Tool {ToolName} validation failed: {Error}", call.ToolName, inputError);
             return new EngineToolResult(
                 Ok: false,
                 Data: null,
@@ -92,6 +96,7 @@ public sealed class ToolAdapter : IExecutor
 
                 // Convert JsonNode args to Dictionary
                 var parameters = ConvertJsonToParameters(call.Args);
+                _logger?.LogDebug("Converted parameters for {ToolName}: {Parameters}", call.ToolName, JsonSerializer.Serialize(parameters));
 
                 // Execute tool
                 var executionResult = await _toolExecutor.ExecuteAsync(
@@ -211,6 +216,23 @@ public sealed class ToolAdapter : IExecutor
                 ["description"] = param.Description
             };
 
+            // Add enum constraint if AllowedValues is specified
+            if (param.AllowedValues != null && param.AllowedValues.Count > 0)
+            {
+                var enumArray = new JsonArray();
+                foreach (var value in param.AllowedValues)
+                {
+                    enumArray.Add(value);
+                }
+                prop["enum"] = enumArray;
+            }
+
+            // Add default value if specified
+            if (param.DefaultValue != null)
+            {
+                prop["default"] = JsonValue.Create(param.DefaultValue);
+            }
+
             properties[param.Name] = prop;
 
             if (param.Required)
@@ -263,11 +285,30 @@ public sealed class ToolAdapter : IExecutor
 
         return node switch
         {
-            JsonValue value => value.GetValue<object>(),
+            JsonValue value => GetValueWithLogging(value),
             JsonArray array => array.Select(ConvertJsonValue).ToList(),
             JsonObject obj => ConvertJsonToParameters(obj),
             _ => node.ToString()
         };
+    }
+
+    private object? GetValueWithLogging(JsonValue value)
+    {
+        // Extract the actual CLR value instead of JsonElement
+        object? converted = value.GetValueKind() switch
+        {
+            JsonValueKind.String => value.GetValue<string>(),
+            JsonValueKind.Number => value.TryGetValue<int>(out var intVal) ? intVal :
+                                  value.TryGetValue<long>(out var longVal) ? longVal :
+                                  value.GetValue<double>(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Null => null,
+            _ => value.GetValue<object>()
+        };
+
+        _logger?.LogDebug("Converted JsonValue to {Type}: {Value}", converted?.GetType().Name ?? "null", converted);
+        return converted;
     }
 
     private IAsyncPolicy BuildRetryPolicy(EngineRetryPolicy policy)

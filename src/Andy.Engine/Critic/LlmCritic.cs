@@ -93,11 +93,45 @@ public class LlmCritic : ICritic
 
         var response = await _llmProvider.CompleteAsync(request, cancellationToken);
 
-        if (response.Content == null)
+        if (response?.AssistantMessage?.Content == null)
             throw new InvalidOperationException("LLM returned null content");
 
-        return JsonNode.Parse(response.Content) ??
-            throw new InvalidOperationException("Failed to parse LLM response as JSON");
+        var content = response.AssistantMessage.Content;
+        _logger?.LogInformation("Raw LLM critic response: '{Response}'", content);
+
+        // Clean up markdown-wrapped JSON if present
+        content = content.Trim();
+        if (content.StartsWith("```"))
+        {
+            // Remove markdown code block wrapper
+            var lines = content.Split('\n');
+            var startIdx = 0;
+            var endIdx = lines.Length - 1;
+
+            // Find start of JSON (skip ```json or ```)
+            if (lines[0].StartsWith("```"))
+                startIdx = 1;
+
+            // Find end (skip closing ```)
+            if (endIdx > 0 && lines[endIdx].Trim() == "```")
+                endIdx--;
+
+            content = string.Join('\n', lines[startIdx..(endIdx + 1)]);
+        }
+
+        _logger?.LogInformation("LLM critic response (cleaned): '{Response}'", content);
+
+        try
+        {
+            var parsed = JsonNode.Parse(content);
+            _logger?.LogInformation("Parsed critic JSON successfully: {Json}", parsed?.ToJsonString());
+            return parsed ?? throw new InvalidOperationException("Failed to parse LLM response as JSON");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError("Failed to parse critic JSON: {Error}. Content was: '{Content}'", ex.Message, content);
+            throw;
+        }
     }
 
     private Critique ParseCritique(JsonNode response)

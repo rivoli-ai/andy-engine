@@ -100,7 +100,7 @@ public class StateManagerTests
                 ["fact2"] = "value2"
             },
             Affordances: new List<string> { "action1" },
-            Raw: new ToolResult(Ok: true)
+            Raw: new ToolResult(Ok: true, Data: null)
         );
         var decision = new CallToolDecision(new ToolCall("test", new System.Text.Json.Nodes.JsonObject()));
 
