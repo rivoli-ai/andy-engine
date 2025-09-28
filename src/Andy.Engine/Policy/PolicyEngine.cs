@@ -70,14 +70,15 @@ public class PolicyEngine
                 _lastToolName = toolName;
             }
 
-            // Check if we should retry
-            if (IsRetryable(errorCode) && _retryCount < policy.MaxRetries)
+            // Check if we should retry - consider both internal count and attempt from result
+            var currentAttempt = Math.Max(_retryCount, lastObservation.Raw.Attempt - 1);
+            if (IsRetryable(errorCode) && currentAttempt < policy.MaxRetries)
             {
                 _logger?.LogInformation(
                     "Retrying tool {Tool} (attempt {Attempt}/{Max}) after {Error}",
-                    toolName, _retryCount + 1, policy.MaxRetries, errorCode);
+                    toolName, currentAttempt + 1, policy.MaxRetries, errorCode);
 
-                return new CallToolAction(decision.Call, _retryCount + 1);
+                return new CallToolAction(decision.Call, currentAttempt + 1);
             }
 
             // Check for fallback
@@ -102,7 +103,8 @@ public class PolicyEngine
             }
 
             // Otherwise, stop with error summary
-            return new StopAction($"Tool execution failed after {_retryCount} attempts: {errorCode}");
+            var finalAttemptCount = Math.Max(_retryCount, lastObservation.Raw.Attempt - 1);
+            return new StopAction($"Max retries exceeded after {finalAttemptCount + 1} attempts: {errorCode}");
         }
 
         // Normal tool call (not a retry)

@@ -108,7 +108,7 @@ public class DefaultObservationNormalizerTests
         observation.KeyFacts.Should().ContainKey("attempt");
         observation.KeyFacts["attempt"].Should().Be("2");
         observation.KeyFacts.Should().ContainKey("name");
-        observation.KeyFacts["name"].Should().Be("\"test\"");
+        observation.KeyFacts["name"].Should().Be("test");
     }
 
     [Fact]

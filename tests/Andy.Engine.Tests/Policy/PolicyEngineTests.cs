@@ -198,7 +198,7 @@ public class PolicyEngineTests
         // Assert
         action.Should().BeOfType<AskUserAction>();
         var askUserAction = action as AskUserAction;
-        askUserAction!.Question.Should().Contain("Missing required field");
+        askUserAction!.Question.Should().Contain("Tool 'test_tool' failed with invalid input. Please provide correct parameters.");
     }
 
     [Fact]
