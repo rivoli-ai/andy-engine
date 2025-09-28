@@ -151,7 +151,7 @@ public class InteractiveAgent : IDisposable
 
             Session ID: {stats.SessionId}
             Started: {stats.StartedAt:yyyy-MM-dd HH:mm:ss}
-            Duration: {stats.TotalDuration:hh\\:mm\\:ss}
+            Duration: {stats.TotalDuration:hh\:mm\:ss}
 
             Turns: {stats.TotalTurns} total, {stats.CompletedTurns} completed
             Success Rate: {stats.SuccessRate:P1}

@@ -22,12 +22,12 @@ public class ConversationManager
     /// <summary>
     /// Unique identifier for this conversation session
     /// </summary>
-    public string SessionId { get; } = Guid.NewGuid().ToString();
+    public string SessionId { get; private set; } = Guid.NewGuid().ToString();
 
     /// <summary>
     /// When this conversation started
     /// </summary>
-    public DateTime StartedAt { get; } = DateTime.UtcNow;
+    public DateTime StartedAt { get; private set; } = DateTime.UtcNow;
 
     /// <summary>
     /// Current conversation history
@@ -63,7 +63,7 @@ public class ConversationManager
         if (_history.Count == 0)
         {
             _logger?.LogWarning("Attempted to complete turn but no user message exists");
-            return;
+            throw new InvalidOperationException("No active conversation turn to complete");
         }
 
         var currentTurn = _history.Last();
@@ -120,6 +120,8 @@ public class ConversationManager
     {
         var turnCount = _history.Count;
         _history.Clear();
+        SessionId = Guid.NewGuid().ToString();
+        StartedAt = DateTime.UtcNow;
         _logger?.LogInformation("Cleared conversation history. Removed {TurnCount} turns", turnCount);
     }
 
