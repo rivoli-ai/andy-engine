@@ -14,4 +14,12 @@
     <None Include="../../assets/andy_engine_icon.png" Pack="true" PackagePath="/" Visible="false" Condition="Exists('../../assets/andy_engine_icon.png')" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Andy.Configuration" Version="2025.7.16-rc.6" />
+    <PackageReference Include="Andy.Context" Version="2025.9.23-rc.4" />
+    <PackageReference Include="Andy.Llm" Version="2025.9.19-rc.15" />
+    <PackageReference Include="Andy.Model" Version="2025.9.20-rc.4" />
+    <PackageReference Include="Andy.Tools" Version="2025.9.5-rc.15" />
+  </ItemGroup>
+
 </Project>
