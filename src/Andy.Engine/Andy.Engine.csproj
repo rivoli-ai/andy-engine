@@ -4,14 +4,30 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <PackageId>andy-engine</PackageId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- Package Information -->
+    <PackageId>Andy.Engine</PackageId>
     <Title>Andy Engine</Title>
-    <Description>Andy.Engine — core engine components for Andy.</Description>
+    <Description>Production-grade C# framework for LLM-driven agents with planning, tool execution, and state management. Part of the Andy ecosystem.</Description>
+    <Version>1.0.0-alpha.1</Version>
+    <Authors>Sam Rivoli</Authors>
+    <Company>Rivoli AI</Company>
+    <Copyright>Copyright © 2025 Rivoli AI</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/rivoli-ai/andy-engine</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/rivoli-ai/andy-engine</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>llm;agent;ai;orchestration;tools;planning</PackageTags>
     <PackageIcon>andy_engine_icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="../../assets/andy_engine_icon.png" Pack="true" PackagePath="/" Visible="false" Condition="Exists('../../assets/andy_engine_icon.png')" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +36,8 @@
     <PackageReference Include="Andy.Llm" Version="2025.9.19-rc.15" />
     <PackageReference Include="Andy.Model" Version="2025.9.20-rc.4" />
     <PackageReference Include="Andy.Tools" Version="2025.9.5-rc.15" />
+    <PackageReference Include="JsonSchema.Net" Version="7.0.0" />
+    <PackageReference Include="Polly" Version="8.5.2" />
   </ItemGroup>
 
 </Project>
