@@ -47,10 +47,10 @@ public class LlmPlanner : IPlanner
 
         return $$"""
             You are the Planner. Choose exactly one next action:
-            - call_tool: { "name": <tool_name>, "args": { ... } }
-            - ask_user: { "question": "...", "missing_fields": ["..."] }
-            - replan: { "subgoals": ["..."] }
-            - stop: { "reason": "..." }
+            - call_tool: { "name": <tool_name>, "args": { ... } } - Execute a tool
+            - ask_user: { "question": "...", "missing_fields": ["..."] } - Request critical missing information ONLY
+            - replan: { "subgoals": ["..."] } - Break down complex goals
+            - stop: { "reason": "..." } - Provide answer or complete the goal
 
             Current Goal: {{state.Goal.UserGoal}}
             Constraints: {{string.Join(", ", state.Goal.Constraints)}}
@@ -63,11 +63,11 @@ public class LlmPlanner : IPlanner
 
             {{(state.LastObservation != null ? $"Last Observation:\n{state.LastObservation.Summary}\nFacts: {JsonSerializer.Serialize(state.LastObservation.KeyFacts)}\nNext Actions: {string.Join(", ", state.LastObservation.Affordances)}" : "")}}
 
-            If a tool fails:
-            - Retry ≤2 with backoff for retryables
-            - Else attempt fallback
-            - Else ask_user for missing information
-            - Else stop with a short summary
+            Guidelines:
+            - For questions you can answer directly, use 'stop' with your answer
+            - Only use 'ask_user' if critical information is genuinely missing
+            - Use 'call_tool' when tools can help achieve the goal
+            - If a tool fails: retry ≤2 with backoff for retryables, then attempt fallback, or stop with explanation
 
             Respond with a JSON object containing your decision.
             """;
@@ -224,7 +224,39 @@ public class LlmPlanner : IPlanner
                 return new CallToolDecision(finalCall);
             }
 
+            // Fallback: Check if response has "ask_user" field (alternative format for conversational responses)
+            var askUser = response["ask_user"];
+            if (askUser != null)
+            {
+                var question = askUser["question"]?.GetValue<string>();
+                var missingFields = askUser["missing_fields"]?.AsArray()
+                    .Select(n => n?.GetValue<string>() ?? "")
+                    .ToList() ?? new List<string>();
+
+                _logger?.LogInformation("Found ask_user format (conversational response), converting to standard format");
+
+                // For simple chat responses, this is actually a completion, not asking for missing info
+                // Convert to a stop decision with the response content
+                if (missingFields.Count == 0 && !string.IsNullOrEmpty(question))
+                {
+                    _logger?.LogInformation("Treating as conversational response (stop with content)");
+                    return new StopDecision(question);
+                }
+
+                return new AskUserDecision(question ?? "Could you provide more information?", missingFields);
+            }
+
+            // Fallback: Check if response has "stop" field (alternative format)
+            var stop = response["stop"];
+            if (stop != null)
+            {
+                var reason = stop["reason"]?.GetValue<string>() ?? "Task completed";
+                _logger?.LogInformation("Found stop format, converting to standard format");
+                return new StopDecision(reason);
+            }
+
             throw new InvalidOperationException($"Missing 'action' field in response: {response.ToJsonString()}");
+
         }
 
         return action switch
