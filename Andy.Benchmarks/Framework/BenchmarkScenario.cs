@@ -158,6 +158,31 @@ public class ValidationConfig
     /// Code quality validation settings
     /// </summary>
     public CodeQualityValidation? CodeQuality { get; init; }
+
+    /// <summary>
+    /// Conversation flow validation (for chat scenarios)
+    /// </summary>
+    public ConversationFlowValidation? ConversationFlow { get; init; }
+
+    /// <summary>
+    /// Strings that must appear in the response
+    /// </summary>
+    public List<string> ResponseMustContain { get; init; } = new();
+
+    /// <summary>
+    /// Strings that must NOT appear in the response
+    /// </summary>
+    public List<string> ResponseMustNotContain { get; init; } = new();
+
+    /// <summary>
+    /// Minimum response length (in characters)
+    /// </summary>
+    public int? MinResponseLength { get; init; }
+
+    /// <summary>
+    /// Agent must not ask user for input (should provide answer directly)
+    /// </summary>
+    public bool MustNotAskUser { get; init; }
 }
 
 public class CompilationValidation
@@ -256,4 +281,61 @@ public class CodeQualityValidation
     /// Maximum cyclomatic complexity allowed
     /// </summary>
     public int? MaxComplexity { get; init; }
+}
+
+/// <summary>
+/// Validation for multi-turn conversation flows
+/// </summary>
+public class ConversationFlowValidation
+{
+    /// <summary>
+    /// Minimum number of conversation turns
+    /// </summary>
+    public int MinTurns { get; init; } = 1;
+
+    /// <summary>
+    /// Maximum number of conversation turns
+    /// </summary>
+    public int? MaxTurns { get; init; }
+
+    /// <summary>
+    /// Whether context must be maintained across turns
+    /// </summary>
+    public bool MustMaintainContext { get; init; } = true;
+
+    /// <summary>
+    /// Validation rules for specific turns
+    /// </summary>
+    public List<TurnValidation> TurnValidations { get; init; } = new();
+}
+
+/// <summary>
+/// Validation for a specific conversation turn
+/// </summary>
+public class TurnValidation
+{
+    /// <summary>
+    /// Turn number (1-indexed)
+    /// </summary>
+    public int TurnNumber { get; init; }
+
+    /// <summary>
+    /// Strings that must appear in this turn's response
+    /// </summary>
+    public List<string> MustContain { get; init; } = new();
+
+    /// <summary>
+    /// Strings that must NOT appear in this turn's response
+    /// </summary>
+    public List<string> MustNotContain { get; init; } = new();
+
+    /// <summary>
+    /// Minimum response length for this turn
+    /// </summary>
+    public int? MinLength { get; init; }
+
+    /// <summary>
+    /// Whether agent must not ask user for input on this turn
+    /// </summary>
+    public bool MustNotAskUser { get; init; }
 }
