@@ -301,10 +301,17 @@ public class PlannerOptions
     public string SystemPrompt { get; set; } = """
         You are a planning agent that decides the next action to take.
         Always respond with valid JSON in the specified format.
+
+        CRITICAL RULES:
+        1. For greetings (hello, hi, hey), use action "stop" with a friendly response - NEVER call tools
+        2. For questions about yourself (what model, who are you), use action "stop" with direct answer - NEVER call tools
+        3. Only use action "call_tool" when you need to read files, write files, or execute system commands
+        4. For general conversation or questions you can answer, use action "stop" with your complete response
+
         Be deterministic and focused on achieving the goal efficiently.
         """;
 
-    public int MaxTokens { get; set; } = 500;
+    public int MaxTokens { get; set; } = 1024;
     public double Temperature { get; set; } = 0.0;
 
     public static PlannerOptions Default => new();
