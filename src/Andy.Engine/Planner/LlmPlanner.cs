@@ -67,10 +67,13 @@ public class LlmPlanner : IPlanner
             - For questions you can answer directly (explanations, code examples, general knowledge), use 'stop' with your COMPLETE answer
             - For requests like "write a program" or "show me code", use 'stop' with the FULL CODE in the reason field
             - When using 'stop', put the ENTIRE response content in the 'reason' field - don't just describe what you'll provide
+            - After successfully executing a tool, ALWAYS use 'stop' to inform the user what was done
+            - When you see a tool result in Last Observation, use that information to provide a helpful response via 'stop'
             - Only use 'ask_user' if absolutely critical information is missing (e.g., API keys, specific file paths)
             - DO NOT ask for clarification on routine requests - make reasonable assumptions and provide a helpful response
             - Use 'call_tool' ONLY when file system operations or external tools are actually needed
             - If a tool fails: retry ≤2 with backoff for retryables, then attempt fallback, or stop with explanation
+            - Maintain conversation context: if the user refers to "that file" or "the program", use information from previous turns
 
             Respond with a JSON object containing your decision.
             """;
