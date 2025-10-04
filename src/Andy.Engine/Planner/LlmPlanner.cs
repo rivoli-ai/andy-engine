@@ -66,6 +66,8 @@ public class LlmPlanner : IPlanner
             {{(state.LastObservation != null ? $"Last Observation:\n{state.LastObservation.Summary}\nFacts: {JsonSerializer.Serialize(state.LastObservation.KeyFacts)}\nNext Actions: {string.Join(", ", state.LastObservation.Affordances)}" : "")}}
 
             Guidelines:
+            - CRITICAL: For simple greetings (hello, hi, hey) or conversational responses, use 'stop' immediately - DO NOT call any tools
+            - For questions about yourself (what model are you, who are you), use 'stop' with a direct answer - DO NOT call any tools
             - For questions you can answer directly (explanations, code examples, general knowledge), use 'stop' with your COMPLETE answer
             - For requests like "write a program" or "show me code", use 'stop' with the FULL CODE in the reason field
             - When using 'stop', put the ENTIRE response content in the 'reason' field - don't just describe what you'll provide
@@ -74,7 +76,8 @@ public class LlmPlanner : IPlanner
             - When you see a tool result in Last Observation, extract key details (file paths, results) and include them in your 'stop' message
             - Only use 'ask_user' if absolutely critical information is missing (e.g., API keys when no default available)
             - DO NOT ask for clarification on routine requests - make reasonable assumptions and provide a helpful response
-            - Use 'call_tool' ONLY when file system operations or external tools are actually needed
+            - Use 'call_tool' ONLY when file system operations or external tools are actually needed (reading files, executing commands, etc.)
+            - DO NOT call tools to gather information you can provide directly (like greetings, self-identification, general knowledge)
             - If a tool fails: retry ≤2 with backoff for retryables, then attempt fallback, or stop with explanation
             - Maintain conversation context: if the user refers to "that file" or "the program", use information from previous turns
             - When the goal is achieved, include "goal achieved" at the END of your detailed response, not as the only text
