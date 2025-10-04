@@ -64,8 +64,10 @@ public class LlmPlanner : IPlanner
             {{(state.LastObservation != null ? $"Last Observation:\n{state.LastObservation.Summary}\nFacts: {JsonSerializer.Serialize(state.LastObservation.KeyFacts)}\nNext Actions: {string.Join(", ", state.LastObservation.Affordances)}" : "")}}
 
             Guidelines:
-            - For questions you can answer directly, use 'stop' with your answer
-            - Only use 'ask_user' if critical information is genuinely missing
+            - For questions you can answer directly (explanations, code examples, general knowledge), use 'stop' with your answer
+            - For requests like "write a program" or "show me code", provide the code directly using 'stop'
+            - Only use 'ask_user' if absolutely critical information is missing (e.g., API keys, specific file paths)
+            - DO NOT ask for clarification on routine requests - make reasonable assumptions and provide a helpful response
             - Use 'call_tool' when tools can help achieve the goal
             - If a tool fails: retry ≤2 with backoff for retryables, then attempt fallback, or stop with explanation
 
