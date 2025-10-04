@@ -218,15 +218,15 @@ public class LlmPlanner : IPlanner
                     _ => toolName?.ToLowerInvariant().Replace(" ", "_")
                 };
 
-                if (mappedToolName == "datetime_tool" && (args == null || !args.AsObject().Any()))
+                if (mappedToolName == "datetime_tool" && (args == null || !args!.AsObject().Any()))
                 {
                     args = JsonNode.Parse("""{"operation": "now"}""");
-                    _logger?.LogInformation("Applied default args for datetime_tool: {Args}", args.ToJsonString());
+                    _logger?.LogInformation("Applied default args for datetime_tool: {Args}", args!.ToJsonString());
                 }
 
                 var finalCall = new EngineToolCall(
                     mappedToolName ?? "unknown_tool",
-                    args ?? JsonNode.Parse("{}")
+                    args ?? JsonNode.Parse("{}")!
                 );
                 _logger?.LogWarning("Creating CallToolDecision: Tool={ToolName}, Args={Args}", finalCall.ToolName, finalCall.Args.ToJsonString());
                 return new CallToolDecision(finalCall);

@@ -64,7 +64,7 @@ public sealed class ToolAdapter : IExecutor
         _logger?.LogDebug("Validating args for tool {ToolName}: {Args}", call.ToolName, call.Args?.ToJsonString());
         _logger?.LogDebug("Using schema: {Schema}", spec.InputSchema?.ToJsonString());
 
-        var (inputOk, inputError) = _validator.Validate(call.Args, spec.InputSchema);
+        var (inputOk, inputError) = _validator.Validate(call.Args!, spec.InputSchema!);
         if (!inputOk)
         {
             _logger?.LogError("Tool {ToolName} validation failed: {Error}", call.ToolName, inputError);
@@ -95,7 +95,7 @@ public sealed class ToolAdapter : IExecutor
                 cts.CancelAfter(spec.Timeout);
 
                 // Convert JsonNode args to Dictionary
-                var parameters = ConvertJsonToParameters(call.Args);
+                var parameters = ConvertJsonToParameters(call.Args!);
                 _logger?.LogDebug("Converted parameters for {ToolName}: {Parameters}", call.ToolName, JsonSerializer.Serialize(parameters));
 
                 // Execute tool

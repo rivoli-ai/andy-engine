@@ -195,12 +195,15 @@ public static class InteractiveAgentExtensions
         InteractiveAgentOptions? options = null,
         ILogger<InteractiveAgent>? logger = null)
     {
-        return InteractiveAgentBuilder.Create()
+        var builder = InteractiveAgentBuilder.Create()
             .WithDefaults(llmProvider, toolRegistry, toolExecutor)
             .WithConsoleInterface()
-            .WithOptions(options ?? InteractiveAgentOptions.Default)
-            .WithLogger(logger)
-            .Build();
+            .WithOptions(options ?? InteractiveAgentOptions.Default);
+
+        if (logger != null)
+            builder = builder.WithLogger(logger);
+
+        return builder.Build();
     }
 
     /// <summary>
@@ -214,11 +217,14 @@ public static class InteractiveAgentExtensions
         InteractiveAgentOptions? options = null,
         ILogger<InteractiveAgent>? logger = null)
     {
-        return InteractiveAgentBuilder.Create()
+        var builder = InteractiveAgentBuilder.Create()
             .WithDefaults(llmProvider, toolRegistry, toolExecutor)
             .WithUserInterface(userInterface)
-            .WithOptions(options ?? InteractiveAgentOptions.Default)
-            .WithLogger(logger)
-            .Build();
+            .WithOptions(options ?? InteractiveAgentOptions.Default);
+
+        if (logger != null)
+            builder = builder.WithLogger(logger);
+
+        return builder.Build();
     }
 }

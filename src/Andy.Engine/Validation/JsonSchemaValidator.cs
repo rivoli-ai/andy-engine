@@ -47,7 +47,7 @@ public class JsonSchemaValidator : IJsonValidator
         var coerced = CoerceTypes(instance, schemaNode);
 
         // Then validate the coerced data
-        var (ok, error) = Validate(coerced, schemaNode);
+        var (ok, error) = Validate(coerced!, schemaNode);
 
         if (!ok)
         {
@@ -55,7 +55,7 @@ public class JsonSchemaValidator : IJsonValidator
         }
 
         // Apply normalization
-        var normalized = NormalizeInstance(coerced, schemaNode);
+        var normalized = NormalizeInstance(coerced!, schemaNode);
         return (true, null, normalized);
     }
 
@@ -83,7 +83,7 @@ public class JsonSchemaValidator : IJsonValidator
         return normalized;
     }
 
-    private JsonNode CoerceTypes(JsonNode instance, JsonNode schemaNode)
+    private JsonNode? CoerceTypes(JsonNode? instance, JsonNode? schemaNode)
     {
         if (instance == null || schemaNode == null)
             return instance;

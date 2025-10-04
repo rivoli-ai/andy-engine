@@ -265,7 +265,7 @@ public class InteractiveAgent : IDisposable
         await _userInterface.ShowContentAsync($"**Conversation History:**\n\n{summary}", ContentType.Markdown, cancellationToken);
     }
 
-    private async Task<AgentGoal> RefineUserGoalAsync(string userMessage, CancellationToken cancellationToken)
+    private Task<AgentGoal> RefineUserGoalAsync(string userMessage, CancellationToken cancellationToken)
     {
         // Basic goal creation - could be enhanced with LLM-based goal refinement
         var constraints = new List<string>();
@@ -279,10 +279,12 @@ public class InteractiveAgent : IDisposable
         // Add any configured constraints
         constraints.AddRange(_options.DefaultConstraints);
 
-        return new AgentGoal(
+        var goal = new AgentGoal(
             UserGoal: userMessage,
             Constraints: constraints
         );
+
+        return Task.FromResult(goal);
     }
 
     private AgentState CreateErrorState(string userMessage, Exception exception)
