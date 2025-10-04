@@ -46,11 +46,13 @@ public class LlmPlanner : IPlanner
         var toolCatalog = GetToolCatalog();
 
         return $$"""
-            You are the Planner. Choose exactly one next action:
-            - call_tool: { "name": <tool_name>, "args": { ... } } - Execute a tool
-            - ask_user: { "question": "...", "missing_fields": ["..."] } - Request critical missing information ONLY
-            - replan: { "subgoals": ["..."] } - Break down complex goals
-            - stop: { "reason": "..." } - Provide answer or complete the goal
+            You are the Planner. Choose exactly one next action and respond with valid JSON.
+
+            Response format examples:
+            - To call a tool: { "action": "call_tool", "name": "tool_name", "args": { "param": "value" } }
+            - To ask user: { "action": "ask_user", "question": "What do you need?", "missing_fields": [] }
+            - To replan: { "action": "replan", "subgoals": ["subgoal 1", "subgoal 2"] }
+            - To stop: { "action": "stop", "reason": "Complete response here" }
 
             Current Goal: {{state.Goal.UserGoal}}
             Constraints: {{string.Join(", ", state.Goal.Constraints)}}
