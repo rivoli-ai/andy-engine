@@ -59,7 +59,7 @@ public class SimpleAgent : IDisposable
         // Add user message to history
         _conversationHistory.Add(new Message
         {
-            Role = MessageRole.User,
+            Role = Role.User,
             Content = userMessage
         });
 
@@ -90,7 +90,13 @@ public class SimpleAgent : IDisposable
                     }
                 };
 
+                _logger?.LogDebug("Sending request - Messages: {MessageCount}, Tools: {ToolCount}, SystemPrompt length: {PromptLength}",
+                    request.Messages.Count, request.Tools.Count, _systemPrompt.Length);
+
                 var response = await _llmProvider.CompleteAsync(request, cancellationToken);
+
+                _logger?.LogInformation("LLM response - Content: '{Content}', HasToolCalls: {HasToolCalls}, FinishReason: {FinishReason}",
+                    response.Content, response.HasToolCalls, response.FinishReason);
 
                 // Add assistant message to history
                 _conversationHistory.Add(response.AssistantMessage);
@@ -138,7 +144,7 @@ public class SimpleAgent : IDisposable
 
                             toolResults.Add(new Message
                             {
-                                Role = MessageRole.Tool,
+                                Role = Role.Tool,
                                 Content = resultContent,
                                 ToolCallId = toolCall.Id
                             });
@@ -148,7 +154,7 @@ public class SimpleAgent : IDisposable
                             _logger?.LogError(ex, "Error executing tool {ToolName}", toolCall.Name);
                             toolResults.Add(new Message
                             {
-                                Role = MessageRole.Tool,
+                                Role = Role.Tool,
                                 Content = JsonSerializer.Serialize(new { success = false, error = ex.Message }),
                                 ToolCallId = toolCall.Id
                             });
@@ -187,10 +193,18 @@ public class SimpleAgent : IDisposable
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Error processing message");
+            _logger?.LogError(ex, "Error processing message: {Message}", ex.Message);
+
+            // Log full stack trace for debugging
+            _logger?.LogError("Stack trace: {StackTrace}", ex.StackTrace);
+            if (ex.InnerException != null)
+            {
+                _logger?.LogError("Inner exception: {InnerMessage}", ex.InnerException.Message);
+            }
+
             return new SimpleAgentResult(
                 Success: false,
-                Response: $"An error occurred: {ex.Message}",
+                Response: $"Error: {ex.Message}\n{ex.InnerException?.Message ?? ""}",
                 TurnCount: turnCount,
                 Duration: DateTime.UtcNow - startTime,
                 StopReason: "error"
@@ -226,11 +240,34 @@ public class SimpleAgent : IDisposable
 
             foreach (var param in metadata.Parameters)
             {
-                properties[param.Name] = new
+                var propertySchema = new Dictionary<string, object>
                 {
-                    type = param.Type.ToLowerInvariant(),
-                    description = param.Description
+                    ["type"] = param.Type.ToLowerInvariant(),
+                    ["description"] = param.Description
                 };
+
+                // Handle array types - add items schema
+                if (param.Type.Equals("array", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (param.ItemType != null)
+                    {
+                        propertySchema["items"] = new Dictionary<string, object>
+                        {
+                            ["type"] = param.ItemType.Type.ToLowerInvariant(),
+                            ["description"] = param.ItemType.Description ?? ""
+                        };
+                    }
+                    else
+                    {
+                        // Default to string items if ItemType not specified
+                        propertySchema["items"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "string"
+                        };
+                    }
+                }
+
+                properties[param.Name] = propertySchema;
 
                 if (param.Required)
                     required.Add(param.Name);
