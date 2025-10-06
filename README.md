@@ -1,6 +1,6 @@
 # Andy.Engine
 
-Production-grade C# framework for building LLM-driven agents with tool execution, planning, and state management.
+C# framework for building LLM-driven agents with tool execution, planning, and state management.
 
 ## Features
 
@@ -119,7 +119,7 @@ Andy.Engine integrates seamlessly with other Andy packages:
 
 ## License
 
-MIT License - see LICENSE file for details
+Apache-2.0 License - see LICENSE file for details
 
 ## Contributing
 

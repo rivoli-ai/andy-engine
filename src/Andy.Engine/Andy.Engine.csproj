@@ -15,7 +15,7 @@
     <Authors>Sam Rivoli</Authors>
     <Company>Rivoli AI</Company>
     <Copyright>Copyright © 2025 Rivoli AI</Copyright>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/rivoli-ai/andy-engine</PackageProjectUrl>
     <RepositoryUrl>https://github.com/rivoli-ai/andy-engine</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
