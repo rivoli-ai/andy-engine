@@ -1,18 +1,15 @@
 using Andy.Benchmarks.Framework;
 using Andy.Benchmarks.Validators;
-using Andy.Engine;
 using Andy.Engine.Benchmarks.Framework;
-using Andy.Engine.Contracts;
 using Andy.Engine.Planner;
 using Andy.Model.Llm;
 using Andy.Model.Model;
 using Andy.Tools;
 using Andy.Tools.Core;
-using Andy.Tools.Execution;
 using Andy.Tools.Framework;
 using Andy.Llm.Extensions;
-using Andy.Llm.Services;
 using Andy.Llm.Providers;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Xunit;
@@ -46,6 +43,8 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         {
             options.RegisterBuiltInTools = true;
             options.EnableDetailedTracing = false;
+            // Configure permissions to allow access to test directory
+            options.DefaultPermissions.AllowedPaths = new HashSet<string> { TestDirectory };
         });
 
         ServiceProvider = services.BuildServiceProvider();
@@ -71,21 +70,20 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         var mockedLlm = new MockedLlmProvider(scenario);
         var capturingLlm = new CapturingLlmProvider(mockedLlm, llmInteractions);
 
-        // Build agent
-        var agentLogger = ServiceProvider.GetRequiredService<ILogger<Agent>>();
-        var agent = AgentBuilder.Create()
-            .WithDefaults(capturingLlm, ToolRegistry, capturingExecutor)
-            .WithPlannerOptions(new PlannerOptions
-            {
-                Temperature = 0,
-                MaxTokens = 1000,
-                SystemPrompt = "You are a file system tool agent."
-            })
-            .WithLogger(agentLogger)
-            .Build();
+        // Build SimpleAgent
+        var agentLogger = ServiceProvider.GetRequiredService<ILogger<SimpleAgent>>();
+        var agent = new SimpleAgent(
+            capturingLlm,
+            ToolRegistry,
+            capturingExecutor,
+            systemPrompt: "You are a file system tool agent that helps users with file operations.",
+            maxTurns: 10,
+            workingDirectory: TestDirectory,
+            logger: agentLogger
+        );
 
         // Run scenario
-        var runner = new ScenarioRunner(agent, TestDirectory);
+        var runner = new SimpleScenarioRunner(agent, TestDirectory);
         var result = await runner.RunAsync(scenario);
 
         // Merge captured parameters and results
@@ -123,6 +121,11 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         {
             result.LlmInteractions.Add(interaction);
         }
+
+        // Add agent and provider metadata
+        result.Metadata["AgentType"] = agent.GetType().Name;
+        result.Metadata["Provider"] = mockedLlm.Name;
+        result.Metadata["Model"] = "mocked-model";
 
         return result;
     }
@@ -150,22 +153,36 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             };
         }
 
-        // Set up LLM services
+        // Set up LLM services with configuration from appsettings.json
         var services = new ServiceCollection();
+
+        // Add configuration from appsettings.json
+        var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+            .AddEnvironmentVariables()
+            .Build();
+
+        services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(configuration);
+
         services.AddLogging(builder =>
         {
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
         });
 
+        // Configure LLM from environment variables (following andy-llm examples pattern)
         services.ConfigureLlmFromEnvironment();
         services.AddLlmServices(options =>
         {
+            // Set OpenAI as default provider
             options.DefaultProvider = "openai";
         });
 
         services.AddAndyTools(options =>
         {
             options.RegisterBuiltInTools = true;
+            // Configure permissions to allow access to test directory
+            options.DefaultPermissions.AllowedPaths = new HashSet<string> { TestDirectory };
         });
 
         var provider = services.BuildServiceProvider();
@@ -180,44 +197,27 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         // Get LLM and wrap to capture interactions
         var llmFactory = provider.GetRequiredService<ILlmProviderFactory>();
         var llmProvider = await llmFactory.CreateAvailableProviderAsync();
+        Console.WriteLine($"[DEBUG] Selected LLM provider: {llmProvider.Name}");
         var llmInteractions = new List<LlmInteraction>();
         var capturingLlm = new CapturingLlmProvider(llmProvider, llmInteractions);
 
         // Wrap executor to capture parameters
         var capturingExecutor = new CapturingToolExecutor(toolExecutor);
 
-        // Build agent
-        var agentLogger = provider.GetRequiredService<ILogger<Agent>>();
-        var agent = AgentBuilder.Create()
-            .WithDefaults(capturingLlm, toolRegistry, capturingExecutor)
-            .WithPlannerOptions(new PlannerOptions
-            {
-                Temperature = 0,
-                MaxTokens = 1000,
-                SystemPrompt = """
-                    You are a JSON-only file system agent. Respond ONLY with valid JSON.
-
-                    Output format (choose one):
-                    {"action": "call_tool", "name": "tool_id", "args": {...}}
-                    {"action": "stop", "reason": "Goal achieved - [explanation]"}
-
-                    Rules:
-                    - ONLY output JSON, nothing else
-                    - Use exact tool IDs from the available tools list
-                    - Use exact parameter names as specified
-                    - For list_directory, use directory_path parameter
-                    - For read_file, use file_path parameter
-                    - Call each tool ONLY ONCE with the correct parameters
-                    - After a successful tool execution, STOP immediately with reason containing "achieved"
-                    - Do NOT retry the same tool with different parameters
-                    - Do NOT call additional tools unless the user explicitly asks for more information
-                    """
-            })
-            .WithLogger(agentLogger)
-            .Build();
+        // Build SimpleAgent
+        var agentLogger = provider.GetRequiredService<ILogger<SimpleAgent>>();
+        var agent = new SimpleAgent(
+            capturingLlm,
+            toolRegistry,
+            capturingExecutor,
+            systemPrompt: "You are a file system tool agent that helps users with file operations.",
+            maxTurns: 10,
+            workingDirectory: TestDirectory,
+            logger: agentLogger
+        );
 
         // Run scenario
-        var runner = new ScenarioRunner(agent, TestDirectory);
+        var runner = new SimpleScenarioRunner(agent, TestDirectory);
         var result = await runner.RunAsync(scenario);
 
         // Merge captured parameters and results
@@ -256,6 +256,13 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             result.LlmInteractions.Add(interaction);
         }
 
+        // Add agent and provider metadata
+        result.Metadata["AgentType"] = agent.GetType().Name;
+        result.Metadata["Provider"] = llmProvider.Name;
+        // Get model from first interaction if available
+        var model = llmInteractions.FirstOrDefault()?.Model ?? "unknown";
+        result.Metadata["Model"] = model;
+
         return result;
     }
 
@@ -273,6 +280,21 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
 
         // Log benchmark execution details
         Output.WriteLine($"📊 Benchmark: {scenario.Id}");
+
+        // Log agent and provider information
+        if (result.Metadata.TryGetValue("AgentType", out var agentType))
+        {
+            Output.WriteLine($"🤖 Agent: {agentType}");
+        }
+        if (result.Metadata.TryGetValue("Provider", out var provider))
+        {
+            Output.WriteLine($"🔌 Provider: {provider}");
+        }
+        if (result.Metadata.TryGetValue("Model", out var model))
+        {
+            Output.WriteLine($"🧠 Model: {model}");
+        }
+
         Output.WriteLine($"⏱️  Duration: {result.Duration.TotalMilliseconds:F0}ms");
         Output.WriteLine($"🔧 Tool Invocations: {result.ToolInvocations.Count}");
 
@@ -322,13 +344,35 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             for (int i = 0; i < result.LlmInteractions.Count; i++)
             {
                 var interaction = result.LlmInteractions[i];
-                Output.WriteLine($"  [{i + 1}] Request to LLM:");
+
+                // Determine interaction type based on request content
+                string interactionType;
+                if (interaction.Request.Contains("You are a planning agent", StringComparison.OrdinalIgnoreCase))
+                {
+                    interactionType = "🎯 Planning";
+                }
+                else if (interaction.Request.Contains("You are a critic", StringComparison.OrdinalIgnoreCase))
+                {
+                    interactionType = "🔍 Critic";
+                }
+                else
+                {
+                    interactionType = "❓ Unknown";
+                }
+
+                // Show context size
+                var contextSizeKb = interaction.ContextSize / 1024.0;
+                var contextSizeDisplay = contextSizeKb >= 1.0
+                    ? $"{contextSizeKb:F2} KB"
+                    : $"{interaction.ContextSize} chars";
+
+                Output.WriteLine($"  [{i + 1}] {interactionType} - Request (Context: {contextSizeDisplay}):");
                 var requestPreview = interaction.Request.Length > 200
                     ? interaction.Request.Substring(0, 200) + "..."
                     : interaction.Request;
                 Output.WriteLine($"      {requestPreview}");
 
-                Output.WriteLine($"  [{i + 1}] LLM Response:");
+                Output.WriteLine($"  [{i + 1}] {interactionType} - Response:");
                 var responsePreview = interaction.Response.Length > 300
                     ? interaction.Response.Substring(0, 300) + "..."
                     : interaction.Response;
@@ -489,7 +533,8 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
                 Timestamp = DateTime.UtcNow,
                 RequestTokens = response.Usage?.PromptTokens ?? 0,
                 ResponseTokens = response.Usage?.CompletionTokens ?? 0,
-                Model = request.Model
+                Model = request.Config?.Model ?? response.Model ?? "unknown",
+                ContextSize = requestText.Length
             });
 
             return response;
@@ -540,24 +585,28 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         {
             _callCount++;
 
-            // For each expected tool, return call_tool action
+            // For each expected tool, return tool calls
             if (_callCount <= _scenario.ExpectedTools.Count)
             {
                 var expectedTool = _scenario.ExpectedTools[_callCount - 1];
-                var json = System.Text.Json.JsonSerializer.Serialize(new
+
+                // Create tool call with arguments as JSON
+                var argsJson = System.Text.Json.JsonSerializer.Serialize(expectedTool.Parameters);
+
+                var toolCall = new ToolCall
                 {
-                    action = "call_tool",
-                    name = expectedTool.Type,
-                    args = expectedTool.Parameters,
-                    reason = $"Calling {expectedTool.Type}"
-                });
+                    Id = $"call_{_callCount}",
+                    Name = expectedTool.Type,
+                    ArgumentsJson = argsJson
+                };
 
                 return Task.FromResult(new LlmResponse
                 {
                     AssistantMessage = new Message
                     {
                         Role = MessageRole.Assistant,
-                        Content = json
+                        Content = "",
+                        ToolCalls = new List<ToolCall> { toolCall }
                     },
                     Usage = new LlmUsage
                     {
@@ -568,20 +617,15 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
                 });
             }
 
-            // After all tools, return stop with "achieved" keyword
-            var stopJson = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                action = "stop",
-                reason = "Goal achieved - all tasks completed successfully"
-            });
-
+            // After all tools, return text response
             return Task.FromResult(new LlmResponse
             {
                 AssistantMessage = new Message
                 {
                     Role = MessageRole.Assistant,
-                    Content = stopJson
+                    Content = "Task completed successfully."
                 },
+                FinishReason = "stop",
                 Usage = new LlmUsage
                 {
                     PromptTokens = 100,

@@ -34,4 +34,9 @@ public class LlmInteraction
     /// Model used for this interaction
     /// </summary>
     public string? Model { get; init; }
+
+    /// <summary>
+    /// Size of the request context in characters
+    /// </summary>
+    public int ContextSize { get; init; }
 }

@@ -21,6 +21,7 @@ public class SimpleAgent : IDisposable
     private readonly ILogger<SimpleAgent>? _logger;
     private readonly string _systemPrompt;
     private readonly int _maxTurns;
+    private readonly string _workingDirectory;
     private readonly List<Message> _conversationHistory = new();
 
     public SimpleAgent(
@@ -29,6 +30,7 @@ public class SimpleAgent : IDisposable
         IToolExecutor toolExecutor,
         string systemPrompt,
         int maxTurns = 10,
+        string? workingDirectory = null,
         ILogger<SimpleAgent>? logger = null)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
@@ -36,6 +38,7 @@ public class SimpleAgent : IDisposable
         _toolExecutor = toolExecutor ?? throw new ArgumentNullException(nameof(toolExecutor));
         _systemPrompt = systemPrompt ?? throw new ArgumentNullException(nameof(systemPrompt));
         _maxTurns = maxTurns;
+        _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
     }
 
@@ -131,7 +134,7 @@ public class SimpleAgent : IDisposable
                                 args,
                                 new ToolExecutionContext
                                 {
-                                    WorkingDirectory = Environment.CurrentDirectory,
+                                    WorkingDirectory = _workingDirectory,
                                     Environment = new Dictionary<string, string>(),
                                     CancellationToken = cancellationToken
                                 }
