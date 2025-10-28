@@ -18,14 +18,24 @@ dotnet test
 
 **Windows (PowerShell):**
 ```powershell
+# Set for current session
 $env:OPENAI_API_KEY="sk-your-api-key-here"
 dotnet test
+
+# Or set permanently for your user account
+[System.Environment]::SetEnvironmentVariable('OPENAI_API_KEY','sk-your-api-key-here','User')
+# Note: Restart PowerShell or your IDE after setting permanently
 ```
 
 **Windows (Command Prompt):**
 ```cmd
+REM Set for current session
 set OPENAI_API_KEY=sk-your-api-key-here
 dotnet test
+
+REM Or set permanently for your user account
+setx OPENAI_API_KEY "sk-your-api-key-here"
+REM Note: Restart Command Prompt or your IDE after setx
 ```
 
 ### Option 2: Configuration File (For Local Development Only)

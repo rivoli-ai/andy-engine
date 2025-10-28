@@ -170,6 +170,19 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
         });
 
+        // Check if OPENAI_API_KEY is set
+        var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        Console.WriteLine($"[DEBUG] OPENAI_API_KEY environment variable: {(string.IsNullOrEmpty(openAiKey) ? "NOT SET" : $"SET (length: {openAiKey.Length})")}");
+
+        if (string.IsNullOrEmpty(openAiKey))
+        {
+            throw new InvalidOperationException(
+                "OPENAI_API_KEY environment variable is not set. Please set it before running tests with real LLM.\n\n" +
+                "On Windows PowerShell: $env:OPENAI_API_KEY=\"sk-your-key\"\n" +
+                "On Windows CMD: set OPENAI_API_KEY=sk-your-key\n" +
+                "On macOS/Linux: export OPENAI_API_KEY=sk-your-key");
+        }
+
         // Use andy-llm's built-in environment variable configuration
         // Environment variables take precedence over appsettings.json
         services.ConfigureLlmFromEnvironment();
