@@ -1,241 +1,165 @@
 using Andy.Benchmarks.Framework;
 using Andy.Benchmarks.Validators;
 using Andy.Engine.Benchmarks.Framework;
+using Andy.Engine.Benchmarks.Scenarios.FileSystem;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Andy.Engine.Tests.Benchmarks.FileSystem;
 
 /// <summary>
-/// Tests for list_directory tool via the engine
-/// Validates that the engine can properly call the LLM to list directory contents
+/// Integration tests for list_directory tool via the engine
+/// Executes scenarios through the Agent with both mocked and real LLM
 /// </summary>
-public class ListDirectoryTests : FileSystemTestBase
+public class ListDirectoryTests : FileSystemIntegrationTestBase
 {
-    [Fact]
-    public void ListDirectory_BasicListing_Success()
+    public ListDirectoryTests(ITestOutputHelper output) : base(output)
     {
-        // Arrange
-        CreateTestFileStructure();
-
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-list-directory-basic",
-            Category = "file-system",
-            Description = "List contents of a directory",
-            Tags = new List<string> { "file-system", "list-directory", "single-tool" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"List all files and directories in {TestDirectory}"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "list_directory",
-                    MinInvocations = 1,
-                    MaxInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["directory_path"] = TestDirectory
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "readme.txt", "documents" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
-
-        // Act & Assert - This is a definition test, actual execution would require agent
-        Assert.NotNull(scenario);
-        Assert.Single(scenario.ExpectedTools);
-        Assert.Equal("list_directory", scenario.ExpectedTools[0].Type);
     }
 
     [Fact]
-    public void ListDirectory_RecursiveListing_Success()
+    public async Task ListDirectory_BasicListing_WithMockedLlm_Success()
     {
         // Arrange
         CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateBasicListing(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-list-directory-recursive",
-            Category = "file-system",
-            Description = "List directory contents recursively",
-            Tags = new List<string> { "file-system", "list-directory", "recursive" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"List all files in {TestDirectory} and all subdirectories recursively"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "list_directory",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["directory_path"] = TestDirectory,
-                        ["recursive"] = true
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string>
-                {
-                    "readme.txt",
-                    "documents",
-                    "report.txt",
-                    "program.cs"
-                }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Single(scenario.ExpectedTools);
-        Assert.True(scenario.ExpectedTools[0].Parameters.ContainsKey("recursive"));
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.Single(result.ToolInvocations);
+        Assert.Equal("list_directory", result.ToolInvocations[0].ToolType);
     }
 
     [Fact]
-    public void ListDirectory_WithPattern_FiltersCorrectly()
+    public async Task ListDirectory_BasicListing_WithRealLlm_Success()
     {
         // Arrange
         CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateBasicListing(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-list-directory-pattern",
-            Category = "file-system",
-            Description = "List directory with file pattern filter",
-            Tags = new List<string> { "file-system", "list-directory", "pattern" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"List all .txt files in {TestDirectory}"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "list_directory",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["directory_path"] = TestDirectory,
-                        ["pattern"] = "*.txt"
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "readme.txt" },
-                mustNotContain: new List<string> { "data.json", "script.sh" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Single(scenario.ExpectedTools);
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
     }
 
     [Fact]
-    public void ListDirectory_IncludeHidden_ShowsHiddenFiles()
+    public async Task ListDirectory_RecursiveListing_WithMockedLlm_Success()
     {
         // Arrange
         CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateRecursiveListing(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-list-directory-hidden",
-            Category = "file-system",
-            Description = "List directory including hidden files",
-            Tags = new List<string> { "file-system", "list-directory", "hidden" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"List all files in {TestDirectory} including hidden files"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "list_directory",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["directory_path"] = TestDirectory,
-                        ["include_hidden"] = true
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { ".hidden" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Single(scenario.ExpectedTools);
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("recursive"));
     }
 
     [Fact]
-    public void ListDirectory_Sorted_ReturnsOrderedList()
+    public async Task ListDirectory_RecursiveListing_WithRealLlm_Success()
     {
         // Arrange
         CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateRecursiveListing(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-list-directory-sorted",
-            Category = "file-system",
-            Description = "List directory sorted by size",
-            Tags = new List<string> { "file-system", "list-directory", "sorting" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"List files in {TestDirectory} sorted by size, largest first"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "list_directory",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["directory_path"] = TestDirectory,
-                        ["sort_by"] = "size",
-                        ["sort_descending"] = true
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Single(scenario.ExpectedTools);
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_WithPattern_WithMockedLlm_FiltersCorrectly()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreatePatternFiltering(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.Equal("*.txt", result.ToolInvocations[0].Parameters["pattern"]);
+    }
+
+    [Fact]
+    public async Task ListDirectory_WithPattern_WithRealLlm_FiltersCorrectly()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreatePatternFiltering(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_IncludeHidden_WithMockedLlm_ShowsHiddenFiles()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateHiddenFileInclusion(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.True((bool)result.ToolInvocations[0].Parameters["include_hidden"]);
+    }
+
+    [Fact]
+    public async Task ListDirectory_IncludeHidden_WithRealLlm_ShowsHiddenFiles()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateHiddenFileInclusion(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_Sorted_WithMockedLlm_ReturnsOrderedList()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateSortedListing(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.Equal("name", result.ToolInvocations[0].Parameters["sort_by"]);
+    }
+
+    [Fact]
+    public async Task ListDirectory_Sorted_WithRealLlm_ReturnsOrderedList()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateSortedListing(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
     }
 }

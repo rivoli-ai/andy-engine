@@ -2,6 +2,7 @@ using Andy.Benchmarks.Framework;
 using Andy.Benchmarks.Validators;
 using Andy.Engine;
 using Andy.Engine.Benchmarks.Framework;
+using Andy.Engine.Benchmarks.Scenarios.FileSystem;
 using Andy.Engine.Contracts;
 using Andy.Engine.Planner;
 using Andy.Model.Llm;
@@ -205,47 +206,8 @@ public class FileSystemBenchmarks
 
     private List<BenchmarkScenario> CreateListDirectoryScenarios()
     {
-        return new List<BenchmarkScenario>
-        {
-            new BenchmarkScenario
-            {
-                Id = "fs-list-directory-basic",
-                Category = "file-system",
-                Description = "List contents of a directory",
-                Tags = new List<string> { "file-system", "list-directory" },
-                Workspace = new WorkspaceConfig
-                {
-                    Type = "directory-copy",
-                    Source = _testDirectory
-                },
-                Context = new ContextInjection
-                {
-                    Prompts = new List<string>
-                    {
-                        $"List all files and directories in {_testDirectory}"
-                    }
-                },
-                ExpectedTools = new List<ExpectedToolInvocation>
-                {
-                    new ExpectedToolInvocation
-                    {
-                        Type = "list_directory",
-                        MinInvocations = 1,
-                        MaxInvocations = 1,
-                        Parameters = new Dictionary<string, object>
-                        {
-                            ["directory_path"] = _testDirectory
-                        }
-                    }
-                },
-                Validation = new ValidationConfig
-                {
-                    ResponseMustContain = new List<string> { "readme.txt", "documents" },
-                    MustNotAskUser = true
-                },
-                Timeout = TimeSpan.FromMinutes(1)
-            }
-        };
+        // Use scenarios from the centralized scenario definitions
+        return ListDirectoryScenarios.CreateScenarios(_testDirectory);
     }
 
     private void LogBenchmarkResult(BenchmarkResult result, BenchmarkScenario scenario)

@@ -10,18 +10,28 @@ public class CapturingToolExecutor : IToolExecutor
 {
     private readonly IToolExecutor _inner;
     private readonly List<(string ToolName, Dictionary<string, object> Parameters)> _capturedInvocations = new();
+    private readonly List<ToolExecutionResult> _capturedResults = new();
 
     public CapturingToolExecutor(IToolExecutor inner)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
 
-        // Forward events from inner executor
+        // Forward events from inner executor and capture results
         _inner.ExecutionStarted += (s, e) => ExecutionStarted?.Invoke(this, e);
-        _inner.ExecutionCompleted += (s, e) => ExecutionCompleted?.Invoke(this, e);
+        _inner.ExecutionCompleted += (s, e) =>
+        {
+            // Capture the result
+            if (e.Result != null)
+            {
+                _capturedResults.Add(e.Result);
+            }
+            ExecutionCompleted?.Invoke(this, e);
+        };
         _inner.SecurityViolation += (s, e) => SecurityViolation?.Invoke(this, e);
     }
 
     public List<(string ToolName, Dictionary<string, object> Parameters)> CapturedInvocations => _capturedInvocations;
+    public List<ToolExecutionResult> CapturedResults => _capturedResults;
 
     // Events - required by IToolExecutor
     public event EventHandler<ToolExecutionStartedEventArgs>? ExecutionStarted;
@@ -101,5 +111,6 @@ public class CapturingToolExecutor : IToolExecutor
     public void ClearCaptured()
     {
         _capturedInvocations.Clear();
+        _capturedResults.Clear();
     }
 }
