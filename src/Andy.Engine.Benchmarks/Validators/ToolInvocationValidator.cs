@@ -1,4 +1,5 @@
 using Andy.Benchmarks.Framework;
+using Andy.Engine.Benchmarks.Framework;
 
 namespace Andy.Benchmarks.Validators;
 
@@ -7,15 +8,15 @@ namespace Andy.Benchmarks.Validators;
 /// </summary>
 public class ToolInvocationValidator : IValidator
 {
-    public Task<ValidationResult> ValidateAsync(
+    public Task<Andy.Engine.Benchmarks.Framework.ValidationResult> ValidateAsync(
         BenchmarkScenario scenario,
-        BenchmarkResult result,
+        Andy.Engine.Benchmarks.Framework.BenchmarkResult result,
         CancellationToken cancellationToken = default)
     {
         if (scenario.ExpectedTools.Count == 0)
         {
             // No expected tools specified, skip validation
-            return Task.FromResult(new ValidationResult
+            return Task.FromResult(new Andy.Engine.Benchmarks.Framework.ValidationResult
             {
                 ValidatorName = nameof(ToolInvocationValidator),
                 Passed = true,
@@ -69,7 +70,7 @@ public class ToolInvocationValidator : IValidator
             ? $"All {scenario.ExpectedTools.Count} expected tool invocation(s) validated successfully"
             : $"Tool invocation validation failed: {string.Join("; ", errors)}";
 
-        return Task.FromResult(new ValidationResult
+        return Task.FromResult(new Andy.Engine.Benchmarks.Framework.ValidationResult
         {
             ValidatorName = nameof(ToolInvocationValidator),
             Passed = passed,

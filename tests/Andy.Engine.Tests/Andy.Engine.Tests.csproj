@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Andy.Engine/Andy.Engine.csproj" />
+    <ProjectReference Include="..\..\src\Andy.Engine.Benchmarks\Andy.Engine.Benchmarks.csproj" />
   </ItemGroup>
 
 </Project>

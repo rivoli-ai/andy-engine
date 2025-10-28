@@ -1,4 +1,4 @@
-namespace Andy.Benchmarks.Framework;
+namespace Andy.Engine.Benchmarks.Framework;
 
 /// <summary>
 /// Result of executing a benchmark scenario

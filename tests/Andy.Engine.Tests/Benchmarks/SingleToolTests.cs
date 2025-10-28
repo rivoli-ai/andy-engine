@@ -1,8 +1,9 @@
 using Andy.Benchmarks.Framework;
 using Andy.Benchmarks.Validators;
+using Andy.Engine.Benchmarks.Framework;
 using Xunit;
 
-namespace Andy.Benchmarks.Scenarios;
+namespace Andy.Engine.Tests.Benchmarks;
 
 /// <summary>
 /// Basic tests for single tool invocations

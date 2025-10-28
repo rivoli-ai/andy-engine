@@ -1,8 +1,7 @@
 using Andy.Benchmarks.Framework;
-using Andy.Benchmarks.Validators;
 using Xunit;
 
-namespace Andy.Benchmarks.Scenarios;
+namespace Andy.Engine.Tests.Benchmarks;
 
 /// <summary>
 /// Tests for conversational interactions without tools
