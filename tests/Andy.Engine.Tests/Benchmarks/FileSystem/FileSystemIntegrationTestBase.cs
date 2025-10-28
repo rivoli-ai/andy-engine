@@ -260,7 +260,10 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         result.Metadata["AgentType"] = agent.GetType().Name;
         result.Metadata["Provider"] = llmProvider.Name;
         // Get model from first interaction if available
-        var model = llmInteractions.FirstOrDefault()?.Model ?? "unknown";
+        var firstInteraction = llmInteractions.FirstOrDefault();
+        var model = !string.IsNullOrEmpty(firstInteraction?.Model)
+            ? firstInteraction.Model
+            : "unknown";
         result.Metadata["Model"] = model;
 
         return result;
@@ -526,6 +529,13 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             var requestText = string.Join("\n", request.Messages.Select(m => $"{m.Role}: {m.Content}"));
             var response = await _inner.CompleteAsync(request, cancellationToken);
 
+            // Capture model from request config or response, ensuring we don't store empty strings
+            var modelFromRequest = request.Config?.Model;
+            var modelFromResponse = response.Model;
+            var capturedModel = !string.IsNullOrEmpty(modelFromRequest) ? modelFromRequest
+                              : !string.IsNullOrEmpty(modelFromResponse) ? modelFromResponse
+                              : "unknown";
+
             _interactions.Add(new LlmInteraction
             {
                 Request = requestText,
@@ -533,7 +543,7 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
                 Timestamp = DateTime.UtcNow,
                 RequestTokens = response.Usage?.PromptTokens ?? 0,
                 ResponseTokens = response.Usage?.CompletionTokens ?? 0,
-                Model = request.Config?.Model ?? response.Model ?? "unknown",
+                Model = capturedModel,
                 ContextSize = requestText.Length
             });
 
