@@ -13,7 +13,7 @@ public class ToolInvocationRecord
     /// <summary>
     /// Parameters passed to the tool
     /// </summary>
-    public Dictionary<string, object> Parameters { get; init; } = new();
+    public Dictionary<string, object> Parameters { get; set; } = new();
 
     /// <summary>
     /// Result returned by the tool

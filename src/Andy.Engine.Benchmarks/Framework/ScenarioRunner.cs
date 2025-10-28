@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Andy.Engine;
 using Andy.Engine.Benchmarks.Framework;
 using Andy.Engine.Contracts;
+using Andy.Tools.Core;
 
 namespace Andy.Benchmarks.Framework;
 
@@ -38,18 +39,31 @@ public class ScenarioRunner
             var workspace = await SetupWorkspaceAsync(scenario.Workspace, cancellationToken);
 
             // Set up event handlers to capture tool invocations
+            Dictionary<string, object>? pendingToolParams = null;
+
+            void OnTurnStarted(object? sender, TurnStartedEventArgs e)
+            {
+                // Reset pending parameters at the start of each turn
+                pendingToolParams = null;
+            }
+
             void OnToolCalled(object? sender, ToolCalledEventArgs e)
             {
                 toolInvocations.Add(new ToolInvocationRecord
                 {
                     ToolType = e.ToolName,
+                    Parameters = pendingToolParams ?? new Dictionary<string, object>(),
                     Result = e.Result,
                     Success = true,
                     Timestamp = DateTime.UtcNow,
                     Duration = TimeSpan.Zero // Will be updated if we have timing info
                 });
+
+                // Reset after capturing
+                pendingToolParams = null;
             }
 
+            _agent.TurnStarted += OnTurnStarted;
             _agent.ToolCalled += OnToolCalled;
 
             try
