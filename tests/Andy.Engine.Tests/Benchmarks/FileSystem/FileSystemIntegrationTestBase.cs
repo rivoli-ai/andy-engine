@@ -170,49 +170,10 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
         });
 
-        // Configure LLM providers from configuration (appsettings.json + environment variables)
-        services.AddLlmServices(options =>
-        {
-            // First, try to load from environment variables (for CI/CD and local dev)
-            var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-            var openAiModel = Environment.GetEnvironmentVariable("OPENAI_MODEL");
-
-            // If no environment variable, try loading from configuration
-            if (string.IsNullOrEmpty(openAiKey))
-            {
-                var providersSection = configuration.GetSection("Providers:OpenAI");
-                if (providersSection.Exists())
-                {
-                    openAiKey = providersSection["ApiKey"];
-                    openAiModel = providersSection["Model"];
-
-                    // Expand environment variable references in config (e.g., ${OPENAI_API_KEY})
-                    if (!string.IsNullOrEmpty(openAiKey) && openAiKey.StartsWith("${") && openAiKey.EndsWith("}"))
-                    {
-                        var envVar = openAiKey.Substring(2, openAiKey.Length - 3);
-                        openAiKey = Environment.GetEnvironmentVariable(envVar);
-                    }
-                }
-            }
-
-            // Configure OpenAI provider if we have an API key
-            if (!string.IsNullOrEmpty(openAiKey))
-            {
-                options.Providers["openai"] = new Andy.Llm.Configuration.ProviderConfig
-                {
-                    ApiKey = openAiKey,
-                    ApiBase = configuration.GetSection("Providers:OpenAI")["BaseUrl"] ?? "https://api.openai.com/v1",
-                    Model = openAiModel ?? "gpt-4o",
-                    Enabled = true
-                };
-                options.DefaultProvider = "openai";
-            }
-            else
-            {
-                throw new InvalidOperationException(
-                    "No OpenAI API key found. Please set OPENAI_API_KEY environment variable or configure it in appsettings.json");
-            }
-        });
+        // Use andy-llm's built-in environment variable configuration
+        // Environment variables take precedence over appsettings.json
+        services.ConfigureLlmFromEnvironment();
+        services.AddLlmServices(configuration);
 
         services.AddAndyTools(options =>
         {

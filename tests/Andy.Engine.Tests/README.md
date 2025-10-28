@@ -28,23 +28,33 @@ set OPENAI_API_KEY=sk-your-api-key-here
 dotnet test
 ```
 
-### Option 2: Configuration File (For Local Development)
+### Option 2: Configuration File (For Local Development Only)
 
-Edit `appsettings.json` and replace the environment variable reference with your actual API key:
+**IMPORTANT:** The `${OPENAI_API_KEY}` syntax in `appsettings.json` is just a placeholder - it does NOT automatically expand environment variables. You must either:
+
+1. **Set the environment variable** (see Option 1 above), OR
+2. **Edit `appsettings.json`** and replace the placeholder with your actual API key:
 
 ```json
 {
-  "Providers": {
-    "OpenAI": {
-      "ApiKey": "sk-your-actual-api-key-here",
-      "BaseUrl": "https://api.openai.com/v1",
-      "Model": "gpt-4o"
+  "Llm": {
+    "DefaultProvider": "openai",
+    "Providers": {
+      "openai": {
+        "ApiKey": "sk-your-actual-api-key-here",
+        "ApiBase": "https://api.openai.com/v1",
+        "Model": "gpt-4o",
+        "Enabled": true
+      }
     }
   }
 }
 ```
 
-**⚠️ Warning:** Do not commit your API key to source control! The `appsettings.json` file uses `${OPENAI_API_KEY}` by default to prevent accidental exposure.
+**⚠️ Security Warning:**
+- Do NOT commit your actual API key to source control!
+- The `appsettings.json` file in this repository uses `${OPENAI_API_KEY}` as a placeholder
+- If you hardcode your key for testing, make sure to revert it before committing
 
 ### Using a Different Model
 
