@@ -156,11 +156,28 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         // Set up LLM services with configuration from appsettings.json
         var services = new ServiceCollection();
 
-        // Add configuration from appsettings.json
+        // Build configuration with appsettings.json taking precedence over environment variables
+        // We map OPENAI_API_KEY to the hierarchical config structure so AddEnvironmentVariables can find it
+        var openAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        if (!string.IsNullOrEmpty(openAiApiKey))
+        {
+            Environment.SetEnvironmentVariable("Llm__Providers__OpenAI__ApiKey", openAiApiKey);
+            Console.WriteLine($"[DEBUG] Mapped OPENAI_API_KEY to hierarchical config key");
+        }
+
+        // Unset OPENAI_MODEL so it doesn't override appsettings.json
+        var originalOpenAiModel = Environment.GetEnvironmentVariable("OPENAI_MODEL");
+        if (!string.IsNullOrEmpty(originalOpenAiModel))
+        {
+            Environment.SetEnvironmentVariable("OPENAI_MODEL", null);
+            Console.WriteLine($"[DEBUG] Temporarily unsetting OPENAI_MODEL (was: {originalOpenAiModel}) to allow appsettings.json to take precedence");
+        }
+
+        // Configuration sources are loaded in order, with LATER sources overriding earlier ones
         var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
-            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
-            .AddEnvironmentVariables()
+            .AddEnvironmentVariables()  // Load env vars first (lower priority, includes Llm__Providers__OpenAI__ApiKey)
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)  // Load JSON last (higher priority, provides Model)
             .Build();
 
         services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(configuration);
@@ -170,23 +187,28 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
         });
 
-        // Check if OPENAI_API_KEY is set
+        // Check configuration for debugging
         var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var configuredModel = configuration["Llm:Providers:OpenAI:Model"];
+        var configuredApiKey = configuration["Llm:Providers:OpenAI:ApiKey"];
+        var configuredDefaultProvider = configuration["Llm:DefaultProvider"];
         Console.WriteLine($"[DEBUG] OPENAI_API_KEY environment variable: {(string.IsNullOrEmpty(openAiKey) ? "NOT SET" : $"SET (length: {openAiKey.Length})")}");
+        Console.WriteLine($"[DEBUG] Configured model from config [Llm:Providers:OpenAI:Model]: {configuredModel ?? "not set"}");
+        Console.WriteLine($"[DEBUG] Configured API key from config: {(string.IsNullOrEmpty(configuredApiKey) ? "NOT SET" : $"SET (length: {configuredApiKey.Length})")}");
+        Console.WriteLine($"[DEBUG] Configured default provider: {configuredDefaultProvider ?? "not set"}");
 
-        if (string.IsNullOrEmpty(openAiKey))
+        // Dump all Llm configuration keys for debugging
+        Console.WriteLine($"[DEBUG] All Llm configuration keys:");
+        foreach (var kvp in configuration.AsEnumerable().Where(k => k.Key.StartsWith("Llm:")))
         {
-            throw new InvalidOperationException(
-                "OPENAI_API_KEY environment variable is not set. Please set it before running tests with real LLM.\n\n" +
-                "On Windows PowerShell: $env:OPENAI_API_KEY=\"sk-your-key\"\n" +
-                "On Windows CMD: set OPENAI_API_KEY=sk-your-key\n" +
-                "On macOS/Linux: export OPENAI_API_KEY=sk-your-key");
+            Console.WriteLine($"[DEBUG]   {kvp.Key} = {kvp.Value ?? "null"}");
         }
 
-        // Use andy-llm's built-in environment variable configuration
-        // Environment variables take precedence over appsettings.json
-        services.ConfigureLlmFromEnvironment();
-        services.AddLlmServices(configuration);
+        // Configure LLM services using both environment and configuration
+        // AddLlmServices loads base configuration (including ApiBase and Model) from appsettings.json
+        // ConfigureLlmFromEnvironment then merges environment variables (like OPENAI_API_KEY)
+        services.AddLlmServices(configuration);   // Load base configuration with ApiBase and Model
+        services.ConfigureLlmFromEnvironment();  // Merge environment variables (ApiKey override)
 
         services.AddAndyTools(options =>
         {
@@ -206,8 +228,53 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
 
         // Get LLM and wrap to capture interactions
         var llmFactory = provider.GetRequiredService<ILlmProviderFactory>();
-        var llmProvider = await llmFactory.CreateAvailableProviderAsync();
-        Console.WriteLine($"[DEBUG] Selected LLM provider: {llmProvider.Name}");
+        ILlmProvider llmProvider;
+
+        // Get the default provider name from configuration, defaulting to "openai"
+        var defaultProviderName = configuration["Llm:DefaultProvider"] ?? "openai";
+        Console.WriteLine($"[DEBUG] Default provider from config: {defaultProviderName}");
+
+        try
+        {
+            // CreateAvailableProviderAsync should respect the DefaultProvider and Enabled settings
+            llmProvider = await llmFactory.CreateAvailableProviderAsync();
+            Console.WriteLine($"[DEBUG] Selected LLM provider: {llmProvider.Name}");
+
+            // Warn if we got a different provider than expected
+            if (!llmProvider.Name.Equals(defaultProviderName, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[WARNING] Expected '{defaultProviderName}' but got '{llmProvider.Name}'. Check your appsettings.json configuration.");
+            }
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("No LLM providers are available"))
+        {
+            throw new InvalidOperationException(
+                "No LLM providers are available. Please check your configuration:\n\n" +
+                "Option 1 - Environment Variables:\n" +
+                "  Windows PowerShell: $env:OPENAI_API_KEY=\"sk-your-key\"\n" +
+                "  Windows CMD: set OPENAI_API_KEY=sk-your-key\n" +
+                "  macOS/Linux: export OPENAI_API_KEY=sk-your-key\n\n" +
+                "Option 2 - appsettings.json:\n" +
+                "  Update tests/Andy.Engine.Tests/appsettings.json:\n" +
+                "  {\n" +
+                "    \"Llm\": {\n" +
+                "      \"DefaultProvider\": \"openai\",\n" +
+                "      \"Providers\": {\n" +
+                "        \"openai\": {\n" +
+                "          \"ApiKey\": \"${OPENAI_API_KEY}\",\n" +
+                "          \"Enabled\": true\n" +
+                "        },\n" +
+                "        \"cerebras\": {\n" +
+                "          \"Enabled\": false\n" +
+                "        }\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n\n" +
+                $"Expected provider: {defaultProviderName}\n" +
+                $"Current configuration check: {(string.IsNullOrEmpty(openAiKey) ? "No OPENAI_API_KEY env var" : "OPENAI_API_KEY is set")}\n" +
+                $"Configuration file: {System.IO.Path.Combine(AppContext.BaseDirectory, "appsettings.json")}",
+                ex);
+        }
         var llmInteractions = new List<LlmInteraction>();
         var capturingLlm = new CapturingLlmProvider(llmProvider, llmInteractions);
 

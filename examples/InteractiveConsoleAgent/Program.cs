@@ -5,6 +5,7 @@ using Andy.Llm.Providers;
 using Andy.Llm.Services;
 using Andy.Tools;
 using Andy.Tools.Framework;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -22,6 +23,13 @@ class Program
 
         try
         {
+            // Load configuration from appsettings.json
+            var configuration = new ConfigurationBuilder()
+                .SetBasePath(AppContext.BaseDirectory)
+                .AddJsonFile("appsettings.json", optional: false)
+                .AddEnvironmentVariables()
+                .Build();
+
             // Setup services (similar to existing andy-cli setup)
             var services = new ServiceCollection();
 
@@ -31,12 +39,9 @@ class Program
                 builder.AddConsole().SetMinimumLevel(LogLevel.Information);
             });
 
-            // Configure LLM from environment
+            // Configure LLM from configuration file, then environment variables will merge
+            services.AddLlmServices(configuration);
             services.ConfigureLlmFromEnvironment();
-            services.AddLlmServices(options =>
-            {
-                options.DefaultProvider = "openai"; // or auto-detect
-            });
 
             // Add Andy Tools
             services.AddAndyTools(options =>

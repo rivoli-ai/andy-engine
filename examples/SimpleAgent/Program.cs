@@ -6,6 +6,7 @@ using Andy.Llm.Providers;
 using Andy.Llm.Services;
 using Andy.Tools;
 using Andy.Tools.Framework;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -15,6 +16,13 @@ class Program
 {
     static async Task Main(string[] args)
     {
+        // Load configuration from appsettings.json
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: false)
+            .AddEnvironmentVariables()
+            .Build();
+
         // Configure services
         var services = new ServiceCollection();
 
@@ -26,13 +34,9 @@ class Program
                 .SetMinimumLevel(LogLevel.Debug);
         });
 
-        // Configure LLM from environment variables
-        // Set OPENAI_API_KEY, CEREBRAS_API_KEY, or other provider keys
+        // Configure LLM from configuration file, then environment variables will merge
+        services.AddLlmServices(configuration);
         services.ConfigureLlmFromEnvironment();
-        services.AddLlmServices(options =>
-        {
-            options.DefaultProvider = "openai"; // or "cerebras", "ollama", etc.
-        });
 
         // Add Andy Tools framework with built-in tools
         services.AddAndyTools(options =>

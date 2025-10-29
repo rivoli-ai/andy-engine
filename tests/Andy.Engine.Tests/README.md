@@ -6,7 +6,7 @@ Integration tests for the Andy.Engine library.
 
 Tests ending with `WithRealLlm` require an OpenAI API key. There are two ways to configure this:
 
-### Option 1: Environment Variable (Recommended)
+### Option 1: Environment Variable (Recommended for macOS/Linux)
 
 Set the `OPENAI_API_KEY` environment variable:
 
@@ -38,23 +38,31 @@ setx OPENAI_API_KEY "sk-your-api-key-here"
 REM Note: Restart Command Prompt or your IDE after setx
 ```
 
-### Option 2: Configuration File (For Local Development Only)
+> **⚠️ Windows Note:** If environment variables aren't working in your test execution context (common with some IDEs), use Option 2 below.
 
-**IMPORTANT:** The `${OPENAI_API_KEY}` syntax in `appsettings.json` is just a placeholder - it does NOT automatically expand environment variables. You must either:
+### Option 2: Configuration File (Recommended for Windows)
 
-1. **Set the environment variable** (see Option 1 above), OR
-2. **Edit `appsettings.json`** and replace the placeholder with your actual API key:
+Edit `tests/Andy.Engine.Tests/appsettings.json` and replace `your-openai-api-key-here` with your actual API key:
 
 ```json
 {
   "Llm": {
-    "DefaultProvider": "openai",
+    "DefaultProvider": "OpenAI",
     "Providers": {
-      "openai": {
+      "OpenAI": {
         "ApiKey": "sk-your-actual-api-key-here",
         "ApiBase": "https://api.openai.com/v1",
         "Model": "gpt-4o",
         "Enabled": true
+      },
+      "Cerebras": {
+        "Enabled": false
+      },
+      "Ollama": {
+        "Enabled": false
+      },
+      "Anthropic": {
+        "Enabled": false
       }
     }
   }
@@ -63,8 +71,22 @@ REM Note: Restart Command Prompt or your IDE after setx
 
 **⚠️ Security Warning:**
 - Do NOT commit your actual API key to source control!
-- The `appsettings.json` file in this repository uses `${OPENAI_API_KEY}` as a placeholder
+- The `appsettings.json` file uses `your-openai-api-key-here` as a placeholder
 - If you hardcode your key for testing, make sure to revert it before committing
+- Consider adding `appsettings.json` to `.git/info/exclude` locally
+
+**Why other providers are disabled:**
+- Even if you have multiple LLM provider API keys in your environment (e.g., CEREBRAS_API_KEY, ANTHROPIC_API_KEY), the configuration explicitly disables them
+- This ensures tests always use OpenAI for consistency
+- `DefaultProvider` is set to "OpenAI" with other providers disabled
+
+**⚠️ Known Limitation - Model Configuration:**
+- The `Model` setting in appsettings.json may not be respected when environment variables are also present
+- This is due to how `ConfigureLlmFromEnvironment()` and `AddLlmServices()` interact
+- If you need to use a specific model, temporarily unset the `OPENAI_MODEL` environment variable:
+  - PowerShell: `Remove-Item Env:OPENAI_MODEL`
+  - Bash: `unset OPENAI_MODEL`
+  - Or restart your terminal/IDE after unsetting it permanently
 
 ### Using a Different Model
 
