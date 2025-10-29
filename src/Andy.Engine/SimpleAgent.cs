@@ -85,11 +85,9 @@ public class SimpleAgent : IDisposable
                     Messages = _conversationHistory,
                     Tools = toolDeclarations,
                     SystemPrompt = _systemPrompt,
-                    Temperature = null, // Explicitly null - let model use its default
                     Config = new LlmClientConfig
                     {
-                        // Don't set Temperature - let the model use its default
-                        // Some models (like gpt-5) only support specific temperature values
+                        // Temperature defaults to null, allowing models to use their own defaults
                         MaxTokens = 4096,
                         TopP = 1.0m
                     }
