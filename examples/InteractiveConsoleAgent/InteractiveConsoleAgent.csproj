@@ -12,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Andy.Llm" Version="0.1.0" />
+    <PackageReference Include="Andy.Llm" Version="0.1.1" />
     <PackageReference Include="Andy.Tools" Version="2025.9.5-rc.15" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="8.0.0" />

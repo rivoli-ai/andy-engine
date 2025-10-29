@@ -140,10 +140,20 @@ public class SimpleAgent : IDisposable
                                 }
                             );
 
-                            // Create tool result message
+                            // Create tool result message with explicit success indicator
+                            // IMPORTANT: Always wrap results in a consistent format so LLM can interpret success/failure
                             var resultContent = toolResult.IsSuccessful
-                                ? JsonSerializer.Serialize(toolResult.Data ?? new { success = true, message = toolResult.Message })
-                                : JsonSerializer.Serialize(new { success = false, error = toolResult.ErrorMessage });
+                                ? JsonSerializer.Serialize(new
+                                  {
+                                      success = true,
+                                      result = toolResult.Data,
+                                      message = toolResult.Message
+                                  })
+                                : JsonSerializer.Serialize(new
+                                  {
+                                      success = false,
+                                      error = toolResult.ErrorMessage
+                                  });
 
                             toolResults.Add(new Message
                             {

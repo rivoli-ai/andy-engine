@@ -236,15 +236,10 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
 
         try
         {
-            // CreateAvailableProviderAsync should respect the DefaultProvider and Enabled settings
-            llmProvider = await llmFactory.CreateAvailableProviderAsync();
-            Console.WriteLine($"[DEBUG] Selected LLM provider: {llmProvider.Name}");
-
-            // Warn if we got a different provider than expected
-            if (!llmProvider.Name.Equals(defaultProviderName, StringComparison.OrdinalIgnoreCase))
-            {
-                Console.WriteLine($"[WARNING] Expected '{defaultProviderName}' but got '{llmProvider.Name}'. Check your appsettings.json configuration.");
-            }
+            // Use the specific provider configured in DefaultProvider
+            // This ensures we use exactly what's configured, not a randomly selected provider
+            llmProvider = llmFactory.CreateProvider(defaultProviderName);
+            Console.WriteLine($"[DEBUG] Using LLM provider: {llmProvider.Name}");
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("No LLM providers are available"))
         {
