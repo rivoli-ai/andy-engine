@@ -215,12 +215,19 @@ public class SimpleAgent : IDisposable
                 _logger?.LogError("Inner exception: {InnerMessage}", ex.InnerException.Message);
             }
 
+            // Include exception details in stop reason so it's visible in benchmark results
+            var errorMessage = ex.Message;
+            if (ex.InnerException != null)
+            {
+                errorMessage += $"\nInner exception: {ex.InnerException.Message}";
+            }
+
             return new SimpleAgentResult(
                 Success: false,
-                Response: $"Error: {ex.Message}\n{ex.InnerException?.Message ?? ""}",
+                Response: $"Error: {errorMessage}",
                 TurnCount: turnCount,
                 Duration: DateTime.UtcNow - startTime,
-                StopReason: "error"
+                StopReason: $"error: {errorMessage}"
             );
         }
     }

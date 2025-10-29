@@ -244,6 +244,25 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         // Add agent and provider metadata
         result.Metadata["AgentType"] = agent.GetType().Name;
         result.Metadata["Provider"] = llmProvider.Name;
+
+        // Check if the scenario failed before validating interactions
+        if (!string.IsNullOrEmpty(result.ErrorMessage))
+        {
+            // Scenario failed - throw the actual error instead of complaining about missing interactions
+            var errorDetails = new System.Text.StringBuilder();
+            errorDetails.AppendLine($"Scenario execution failed: {result.ErrorMessage}");
+            errorDetails.AppendLine();
+            errorDetails.AppendLine("NOTE: Check the test output above for detailed error logs from the agent.");
+            errorDetails.AppendLine("The agent logs the full exception details before returning the error status.");
+            if (!string.IsNullOrEmpty(result.StackTrace))
+            {
+                errorDetails.AppendLine();
+                errorDetails.AppendLine("Stack trace:");
+                errorDetails.AppendLine(result.StackTrace);
+            }
+            throw new InvalidOperationException(errorDetails.ToString());
+        }
+
         // Get model from first interaction - throw if not captured
         var firstInteraction = llmInteractions.FirstOrDefault();
         if (firstInteraction == null || string.IsNullOrEmpty(firstInteraction.Model))
@@ -251,7 +270,8 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             throw new InvalidOperationException(
                 $"Model information was not captured from LLM interaction. " +
                 $"Interaction count: {llmInteractions.Count}, " +
-                $"First interaction: {(firstInteraction == null ? "null" : "exists but model is empty")}");
+                $"First interaction: {(firstInteraction == null ? "null" : "exists but model is empty")}. " +
+                $"This usually indicates the LLM call succeeded but didn't return model information.");
         }
         result.Metadata["Model"] = firstInteraction.Model;
 
