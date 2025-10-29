@@ -244,12 +244,16 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         // Add agent and provider metadata
         result.Metadata["AgentType"] = agent.GetType().Name;
         result.Metadata["Provider"] = llmProvider.Name;
-        // Get model from first interaction if available
+        // Get model from first interaction - throw if not captured
         var firstInteraction = llmInteractions.FirstOrDefault();
-        var model = !string.IsNullOrEmpty(firstInteraction?.Model)
-            ? firstInteraction.Model
-            : "unknown";
-        result.Metadata["Model"] = model;
+        if (firstInteraction == null || string.IsNullOrEmpty(firstInteraction.Model))
+        {
+            throw new InvalidOperationException(
+                $"Model information was not captured from LLM interaction. " +
+                $"Interaction count: {llmInteractions.Count}, " +
+                $"First interaction: {(firstInteraction == null ? "null" : "exists but model is empty")}");
+        }
+        result.Metadata["Model"] = firstInteraction.Model;
 
         return result;
     }
@@ -514,12 +518,25 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             var requestText = string.Join("\n", request.Messages.Select(m => $"{m.Role}: {m.Content}"));
             var response = await _inner.CompleteAsync(request, cancellationToken);
 
-            // Capture model from request config or response, ensuring we don't store empty strings
+            // Capture model from request config or response - throw if neither available
             var modelFromRequest = request.Config?.Model;
             var modelFromResponse = response.Model;
-            var capturedModel = !string.IsNullOrEmpty(modelFromRequest) ? modelFromRequest
-                              : !string.IsNullOrEmpty(modelFromResponse) ? modelFromResponse
-                              : "unknown";
+            string capturedModel;
+            if (!string.IsNullOrEmpty(modelFromRequest))
+            {
+                capturedModel = modelFromRequest;
+            }
+            else if (!string.IsNullOrEmpty(modelFromResponse))
+            {
+                capturedModel = modelFromResponse;
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"Model information not available in request config or response. " +
+                    $"Request.Config?.Model: {modelFromRequest ?? "null"}, " +
+                    $"Response.Model: {modelFromResponse ?? "null"}");
+            }
 
             _interactions.Add(new LlmInteraction
             {
