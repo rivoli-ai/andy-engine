@@ -85,6 +85,7 @@ public class SimpleAgent : IDisposable
                     Messages = _conversationHistory,
                     Tools = toolDeclarations,
                     SystemPrompt = _systemPrompt,
+                    Temperature = null, // Explicitly null - let model use its default
                     Config = new LlmClientConfig
                     {
                         // Don't set Temperature - let the model use its default
