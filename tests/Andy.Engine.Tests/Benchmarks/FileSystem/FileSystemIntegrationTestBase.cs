@@ -131,53 +131,18 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
     }
 
     /// <summary>
-    /// Runs a scenario with real OpenAI LLM (requires OPENAI_API_KEY)
+    /// Runs a scenario with real LLM using configuration from appsettings.json
     /// </summary>
     protected async Task<BenchmarkResult> RunWithRealLlmAsync(BenchmarkScenario scenario)
     {
-        // Skip if no API key
-        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OPENAI_API_KEY")))
-        {
-            return new BenchmarkResult
-            {
-                ScenarioId = scenario.Id,
-                Success = false,
-                Duration = TimeSpan.Zero,
-                StartedAt = DateTime.UtcNow,
-                CompletedAt = DateTime.UtcNow,
-                ToolInvocations = new List<ToolInvocationRecord>(),
-                LlmInteractions = new List<LlmInteraction>(),
-                ValidationResults = new List<ValidationResult>(),
-                Metrics = new PerformanceMetrics(),
-                ErrorMessage = "OPENAI_API_KEY not set - skipping real LLM test"
-            };
-        }
-
-        // Set up LLM services with configuration from appsettings.json
+        // Set up services
         var services = new ServiceCollection();
 
-        // Build configuration with appsettings.json taking precedence over environment variables
-        // We map OPENAI_API_KEY to the hierarchical config structure so AddEnvironmentVariables can find it
-        var openAiApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (!string.IsNullOrEmpty(openAiApiKey))
-        {
-            Environment.SetEnvironmentVariable("Llm__Providers__OpenAI__ApiKey", openAiApiKey);
-            Console.WriteLine($"[DEBUG] Mapped OPENAI_API_KEY to hierarchical config key");
-        }
-
-        // Unset OPENAI_MODEL so it doesn't override appsettings.json
-        var originalOpenAiModel = Environment.GetEnvironmentVariable("OPENAI_MODEL");
-        if (!string.IsNullOrEmpty(originalOpenAiModel))
-        {
-            Environment.SetEnvironmentVariable("OPENAI_MODEL", null);
-            Console.WriteLine($"[DEBUG] Temporarily unsetting OPENAI_MODEL (was: {originalOpenAiModel}) to allow appsettings.json to take precedence");
-        }
-
-        // Configuration sources are loaded in order, with LATER sources overriding earlier ones
+        // Load configuration from appsettings.json
         var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
-            .AddEnvironmentVariables()  // Load env vars first (lower priority, includes Llm__Providers__OpenAI__ApiKey)
-            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)  // Load JSON last (higher priority, provides Model)
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+            .AddEnvironmentVariables()
             .Build();
 
         services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(configuration);
@@ -187,28 +152,9 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
         });
 
-        // Check configuration for debugging
-        var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        var configuredModel = configuration["Llm:Providers:OpenAI:Model"];
-        var configuredApiKey = configuration["Llm:Providers:OpenAI:ApiKey"];
-        var configuredDefaultProvider = configuration["Llm:DefaultProvider"];
-        Console.WriteLine($"[DEBUG] OPENAI_API_KEY environment variable: {(string.IsNullOrEmpty(openAiKey) ? "NOT SET" : $"SET (length: {openAiKey.Length})")}");
-        Console.WriteLine($"[DEBUG] Configured model from config [Llm:Providers:OpenAI:Model]: {configuredModel ?? "not set"}");
-        Console.WriteLine($"[DEBUG] Configured API key from config: {(string.IsNullOrEmpty(configuredApiKey) ? "NOT SET" : $"SET (length: {configuredApiKey.Length})")}");
-        Console.WriteLine($"[DEBUG] Configured default provider: {configuredDefaultProvider ?? "not set"}");
-
-        // Dump all Llm configuration keys for debugging
-        Console.WriteLine($"[DEBUG] All Llm configuration keys:");
-        foreach (var kvp in configuration.AsEnumerable().Where(k => k.Key.StartsWith("Llm:")))
-        {
-            Console.WriteLine($"[DEBUG]   {kvp.Key} = {kvp.Value ?? "null"}");
-        }
-
-        // Configure LLM services using both environment and configuration
-        // AddLlmServices loads base configuration (including ApiBase and Model) from appsettings.json
-        // ConfigureLlmFromEnvironment then merges environment variables (like OPENAI_API_KEY)
-        services.AddLlmServices(configuration);   // Load base configuration with ApiBase and Model
-        services.ConfigureLlmFromEnvironment();  // Merge environment variables (ApiKey override)
+        // Load LLM configuration from appsettings.json, then merge environment variables
+        services.AddLlmServices(configuration);
+        services.ConfigureLlmFromEnvironment();
 
         services.AddAndyTools(options =>
         {
@@ -226,50 +172,17 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         var toolRegistry = provider.GetRequiredService<IToolRegistry>();
         var toolExecutor = provider.GetRequiredService<IToolExecutor>();
 
-        // Get LLM and wrap to capture interactions
+        // Get LLM provider from configuration
         var llmFactory = provider.GetRequiredService<ILlmProviderFactory>();
-        ILlmProvider llmProvider;
 
-        // Get the default provider name from configuration, defaulting to "openai"
-        var defaultProviderName = configuration["Llm:DefaultProvider"] ?? "openai";
-        Console.WriteLine($"[DEBUG] Default provider from config: {defaultProviderName}");
+        // Use the provider specified in DefaultProvider (e.g., "openai/latest-small")
+        var defaultProviderName = configuration["Llm:DefaultProvider"];
+        if (string.IsNullOrEmpty(defaultProviderName))
+        {
+            throw new InvalidOperationException("Llm:DefaultProvider not configured in appsettings.json");
+        }
 
-        try
-        {
-            // Use the specific provider configured in DefaultProvider
-            // This ensures we use exactly what's configured, not a randomly selected provider
-            llmProvider = llmFactory.CreateProvider(defaultProviderName);
-            Console.WriteLine($"[DEBUG] Using LLM provider: {llmProvider.Name}");
-        }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("No LLM providers are available"))
-        {
-            throw new InvalidOperationException(
-                "No LLM providers are available. Please check your configuration:\n\n" +
-                "Option 1 - Environment Variables:\n" +
-                "  Windows PowerShell: $env:OPENAI_API_KEY=\"sk-your-key\"\n" +
-                "  Windows CMD: set OPENAI_API_KEY=sk-your-key\n" +
-                "  macOS/Linux: export OPENAI_API_KEY=sk-your-key\n\n" +
-                "Option 2 - appsettings.json:\n" +
-                "  Update tests/Andy.Engine.Tests/appsettings.json:\n" +
-                "  {\n" +
-                "    \"Llm\": {\n" +
-                "      \"DefaultProvider\": \"openai\",\n" +
-                "      \"Providers\": {\n" +
-                "        \"openai\": {\n" +
-                "          \"ApiKey\": \"${OPENAI_API_KEY}\",\n" +
-                "          \"Enabled\": true\n" +
-                "        },\n" +
-                "        \"cerebras\": {\n" +
-                "          \"Enabled\": false\n" +
-                "        }\n" +
-                "      }\n" +
-                "    }\n" +
-                "  }\n\n" +
-                $"Expected provider: {defaultProviderName}\n" +
-                $"Current configuration check: {(string.IsNullOrEmpty(openAiKey) ? "No OPENAI_API_KEY env var" : "OPENAI_API_KEY is set")}\n" +
-                $"Configuration file: {System.IO.Path.Combine(AppContext.BaseDirectory, "appsettings.json")}",
-                ex);
-        }
+        var llmProvider = llmFactory.CreateProvider(defaultProviderName);
         var llmInteractions = new List<LlmInteraction>();
         var capturingLlm = new CapturingLlmProvider(llmProvider, llmInteractions);
 
