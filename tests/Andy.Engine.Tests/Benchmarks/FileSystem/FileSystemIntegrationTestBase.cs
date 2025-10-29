@@ -76,7 +76,7 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             capturingLlm,
             ToolRegistry,
             capturingExecutor,
-            systemPrompt: "You are a file system tool agent that helps users with file operations.",
+            systemPrompt: "You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools.",
             maxTurns: 10,
             workingDirectory: TestDirectory,
             logger: agentLogger
@@ -195,7 +195,7 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             capturingLlm,
             toolRegistry,
             capturingExecutor,
-            systemPrompt: "You are a file system tool agent that helps users with file operations.",
+            systemPrompt: "You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools.",
             maxTurns: 10,
             workingDirectory: TestDirectory,
             logger: agentLogger
