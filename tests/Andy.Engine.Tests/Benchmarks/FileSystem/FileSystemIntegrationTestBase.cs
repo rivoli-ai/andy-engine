@@ -538,7 +538,7 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             var requestText = string.Join("\n", request.Messages.Select(m => $"{m.Role}: {m.Content}"));
             var response = await _inner.CompleteAsync(request, cancellationToken);
 
-            // Capture model from request config or response - throw if neither available
+            // Capture model from request config or response
             var modelFromRequest = request.Config?.Model;
             var modelFromResponse = response.Model;
             string capturedModel;
@@ -550,8 +550,14 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             {
                 capturedModel = modelFromResponse;
             }
+            else if (_inner.Name == "MockedLLM")
+            {
+                // For mocked LLM, use placeholder model name
+                capturedModel = "mocked-model";
+            }
             else
             {
+                // For real LLMs, model information should always be available
                 throw new InvalidOperationException(
                     $"Model information not available in request config or response. " +
                     $"Request.Config?.Model: {modelFromRequest ?? "null"}, " +
