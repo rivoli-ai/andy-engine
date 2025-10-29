@@ -87,7 +87,8 @@ public class SimpleAgent : IDisposable
                     SystemPrompt = _systemPrompt,
                     Config = new LlmClientConfig
                     {
-                        Temperature = 0.1m, // Slightly higher than 0 for flexibility
+                        // Don't set Temperature - let the model use its default
+                        // Some models (like gpt-5) only support specific temperature values
                         MaxTokens = 4096,
                         TopP = 1.0m
                     }
