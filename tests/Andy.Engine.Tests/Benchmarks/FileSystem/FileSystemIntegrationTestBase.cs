@@ -395,9 +395,13 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
                 {
                     interactionType = "🔍 Critic";
                 }
+                else if (interaction.Request.Contains("You are a file system assistant", StringComparison.OrdinalIgnoreCase))
+                {
+                    interactionType = "🤖 Agent";
+                }
                 else
                 {
-                    interactionType = "❓ Unknown";
+                    interactionType = "💬 Direct";
                 }
 
                 // Show context size
