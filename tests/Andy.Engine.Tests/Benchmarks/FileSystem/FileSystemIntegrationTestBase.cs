@@ -59,6 +59,22 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
     }
 
     /// <summary>
+    /// Runs a scenario with the specified LLM mode
+    /// </summary>
+    /// <param name="scenario">The benchmark scenario to run</param>
+    /// <param name="mode">The LLM mode to use (Mock or Real)</param>
+    /// <returns>Benchmark result</returns>
+    protected async Task<BenchmarkResult> RunAsync(BenchmarkScenario scenario, LlmMode mode)
+    {
+        return mode switch
+        {
+            LlmMode.Mock => await RunWithMockedLlmAsync(scenario),
+            LlmMode.Real => await RunWithRealLlmAsync(scenario),
+            _ => throw new ArgumentException($"Unknown LLM mode: {mode}", nameof(mode))
+        };
+    }
+
+    /// <summary>
     /// Runs a scenario with a mocked LLM and validates results using xUnit assertions
     /// </summary>
     protected async Task<BenchmarkResult> RunWithMockedLlmAsync(BenchmarkScenario scenario)

@@ -17,315 +17,198 @@ public class ListDirectoryTests : FileSystemIntegrationTestBase
     {
     }
 
-    [Fact]
-    public async Task ListDirectory_BasicListing_WithMockedLlm_Success()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_BasicListing_Success(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateBasicListing(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.Single(result.ToolInvocations);
-        Assert.Equal("list_directory", result.ToolInvocations[0].ToolType);
+        if (mode == LlmMode.Mock)
+        {
+            Assert.Single(result.ToolInvocations);
+            Assert.Equal("list_directory", result.ToolInvocations[0].ToolType);
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_BasicListing_WithRealLlm_Success()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateBasicListing(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_RecursiveListing_WithMockedLlm_Success()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_RecursiveListing_Success(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateRecursiveListing(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("recursive"));
+        if (mode == LlmMode.Mock)
+        {
+            Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("recursive"));
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_RecursiveListing_WithRealLlm_Success()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateRecursiveListing(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_WithPattern_WithMockedLlm_FiltersCorrectly()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_WithPattern_FiltersCorrectly(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreatePatternFiltering(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.Equal("*.txt", result.ToolInvocations[0].Parameters["pattern"]);
+        if (mode == LlmMode.Mock)
+        {
+            Assert.Equal("*.txt", result.ToolInvocations[0].Parameters["pattern"]);
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_WithPattern_WithRealLlm_FiltersCorrectly()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreatePatternFiltering(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_IncludeHidden_WithMockedLlm_ShowsHiddenFiles()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_IncludeHidden_ShowsHiddenFiles(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateHiddenFileInclusion(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.True((bool)result.ToolInvocations[0].Parameters["include_hidden"]);
+        if (mode == LlmMode.Mock)
+        {
+            Assert.True((bool)result.ToolInvocations[0].Parameters["include_hidden"]);
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_IncludeHidden_WithRealLlm_ShowsHiddenFiles()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateHiddenFileInclusion(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_Sorted_WithMockedLlm_ReturnsOrderedList()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_Sorted_ReturnsOrderedList(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateSortedListing(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.Equal("name", result.ToolInvocations[0].Parameters["sort_by"]);
+        if (mode == LlmMode.Mock)
+        {
+            Assert.Equal("name", result.ToolInvocations[0].Parameters["sort_by"]);
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_Sorted_WithRealLlm_ReturnsOrderedList()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateSortedListing(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_EmptyDirectory_WithMockedLlm_Success()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_EmptyDirectory_Success(LlmMode mode)
     {
         // Arrange
         CreateTestDirectory("empty_dir");
         var scenario = ListDirectoryScenarios.CreateEmptyDirectory(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
     }
 
-    [Fact]
-    public async Task ListDirectory_EmptyDirectory_WithRealLlm_Success()
-    {
-        // Arrange
-        CreateTestDirectory("empty_dir");
-        var scenario = ListDirectoryScenarios.CreateEmptyDirectory(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_SortBySize_WithMockedLlm_Success()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_SortBySize_Success(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateSortBySize(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.Equal("size", result.ToolInvocations[0].Parameters["sort_by"]);
+        if (mode == LlmMode.Mock)
+        {
+            Assert.Equal("size", result.ToolInvocations[0].Parameters["sort_by"]);
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_SortBySize_WithRealLlm_Success()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateSortBySize(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_SortDescending_WithMockedLlm_Success()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_SortDescending_Success(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateSortDescending(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.Equal("name", result.ToolInvocations[0].Parameters["sort_by"]);
-        Assert.True((bool)result.ToolInvocations[0].Parameters["sort_descending"]);
+        if (mode == LlmMode.Mock)
+        {
+            Assert.Equal("name", result.ToolInvocations[0].Parameters["sort_by"]);
+            Assert.True((bool)result.ToolInvocations[0].Parameters["sort_descending"]);
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_SortDescending_WithRealLlm_Success()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateSortDescending(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_MaxDepth_WithMockedLlm_Success()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_MaxDepth_Success(LlmMode mode)
     {
         // Arrange
         CreateTestFileStructure();
         var scenario = ListDirectoryScenarios.CreateMaxDepth(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("max_depth"));
+        if (mode == LlmMode.Mock)
+        {
+            Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("max_depth"));
+        }
     }
 
-    [Fact]
-    public async Task ListDirectory_MaxDepth_WithRealLlm_Success()
-    {
-        // Arrange
-        CreateTestFileStructure();
-        var scenario = ListDirectoryScenarios.CreateMaxDepth(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_DirectoryNotFound_WithMockedLlm_HandlesError()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_DirectoryNotFound_HandlesError(LlmMode mode)
     {
         // Arrange
         var scenario = ListDirectoryScenarios.CreateDirectoryNotFound(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
     }
 
-    [Fact]
-    public async Task ListDirectory_DirectoryNotFound_WithRealLlm_HandlesError()
-    {
-        // Arrange
-        var scenario = ListDirectoryScenarios.CreateDirectoryNotFound(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_InvalidPath_WithMockedLlm_HandlesError()
+    [Theory]
+    [LlmTestData]
+    public async Task ListDirectory_InvalidPath_HandlesError(LlmMode mode)
     {
         // Arrange
         var scenario = ListDirectoryScenarios.CreateInvalidPath(TestDirectory);
 
         // Act
-        var result = await RunWithMockedLlmAsync(scenario);
-
-        // Assert
-        AssertBenchmarkSuccess(result, scenario);
-    }
-
-    [Fact]
-    public async Task ListDirectory_InvalidPath_WithRealLlm_HandlesError()
-    {
-        // Arrange
-        var scenario = ListDirectoryScenarios.CreateInvalidPath(TestDirectory);
-
-        // Act
-        var result = await RunWithRealLlmAsync(scenario);
+        var result = await RunAsync(scenario, mode);
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
