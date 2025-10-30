@@ -196,6 +196,17 @@ public class SimpleAgent : IDisposable
 
             // Exhausted max turns
             _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
+
+            // Log conversation history to help debug why max turns was exceeded
+            _logger?.LogWarning("Conversation history at max_turns:");
+            for (int i = 0; i < _conversationHistory.Count; i++)
+            {
+                var msg = _conversationHistory[i];
+                var preview = msg.Content?.Length > 100 ? msg.Content.Substring(0, 100) + "..." : msg.Content;
+                _logger?.LogWarning("  [{Index}] {Role}: {Preview} (ToolCalls: {ToolCallCount})",
+                    i, msg.Role, preview, msg.ToolCalls?.Count ?? 0);
+            }
+
             return new SimpleAgentResult(
                 Success: false,
                 Response: "I've reached the maximum number of steps. Could you please rephrase your request?",
