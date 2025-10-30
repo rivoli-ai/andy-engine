@@ -96,6 +96,12 @@ public class SimpleAgent : IDisposable
                 _logger?.LogDebug("Sending request - Messages: {MessageCount}, Tools: {ToolCount}, SystemPrompt length: {PromptLength}",
                     request.Messages.Count, request.Tools.Count, _systemPrompt.Length);
 
+                if (_logger?.IsEnabled(LogLevel.Debug) == true && toolDeclarations.Count > 0)
+                {
+                    _logger.LogDebug("Available tools in request: {ToolNames}",
+                        string.Join(", ", toolDeclarations.Select(t => t.Name)));
+                }
+
                 var response = await _llmProvider.CompleteAsync(request, cancellationToken);
 
                 _logger?.LogInformation("LLM response - Content: '{Content}', HasToolCalls: {HasToolCalls}, FinishReason: {FinishReason}",

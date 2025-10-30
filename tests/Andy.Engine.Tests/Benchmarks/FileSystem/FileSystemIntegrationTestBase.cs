@@ -87,6 +87,11 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         var mockedLlm = new MockedLlmProvider(scenario);
         var capturingLlm = new CapturingLlmProvider(mockedLlm, llmInteractions);
 
+        // Log available tools for debugging
+        var availableTools = ToolRegistry.Tools.Where(t => t.IsEnabled).Select(t => t.Metadata.Id).ToList();
+        Output.WriteLine($"🔧 Available tools ({availableTools.Count}): {string.Join(", ", availableTools)}");
+        Output.WriteLine($"🧠 Using LLM: {mockedLlm.Name} (Mock)");
+
         // Build SimpleAgent
         var agentLogger = ServiceProvider.GetRequiredService<ILogger<SimpleAgent>>();
         var agent = new SimpleAgent(
@@ -206,6 +211,11 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
 
         // Wrap executor to capture parameters
         var capturingExecutor = new CapturingToolExecutor(toolExecutor);
+
+        // Log available tools for debugging
+        var availableTools = toolRegistry.Tools.Where(t => t.IsEnabled).Select(t => t.Metadata.Id).ToList();
+        Output.WriteLine($"🔧 Available tools ({availableTools.Count}): {string.Join(", ", availableTools)}");
+        Output.WriteLine($"🧠 Using LLM: {llmProvider.Name}");
 
         // Build SimpleAgent
         var agentLogger = provider.GetRequiredService<ILogger<SimpleAgent>>();
