@@ -67,7 +67,7 @@ public class SimpleScenarioRunner
                     StartedAt = startTime,
                     CompletedAt = DateTime.UtcNow,
                     ToolInvocations = toolInvocations,
-                    ErrorMessage = agentResult.Success ? null : agentResult.StopReason
+                    ErrorMessage = agentResult.Success ? null : $"{agentResult.StopReason}\n\n{agentResult.Response}"
                 };
             }
             finally

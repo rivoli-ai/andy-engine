@@ -36,7 +36,8 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
 
         services.AddLogging(builder =>
         {
-            builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
+            builder.AddConsole().SetMinimumLevel(LogLevel.Debug);
+            builder.AddDebug();
         });
 
         services.AddAndyTools(options =>
@@ -70,13 +71,16 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         var mockedLlm = new MockedLlmProvider(scenario);
         var capturingLlm = new CapturingLlmProvider(mockedLlm, llmInteractions);
 
+        // Build file structure context
+        var filesContext = BuildFileStructureContext(TestDirectory);
+
         // Build SimpleAgent
         var agentLogger = ServiceProvider.GetRequiredService<ILogger<SimpleAgent>>();
         var agent = new SimpleAgent(
             capturingLlm,
             ToolRegistry,
             capturingExecutor,
-            systemPrompt: "You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools.",
+            systemPrompt: $"You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools. IMPORTANT: Only access the specific directory requested by the user - do not try to access parent directories or other paths without explicit permission. After you get the results from a tool, provide a clear text response to the user summarizing what you found or accomplished.\n\nCurrent workspace file structure:\n{filesContext}",
             maxTurns: 10,
             workingDirectory: TestDirectory,
             logger: agentLogger
@@ -149,7 +153,8 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
 
         services.AddLogging(builder =>
         {
-            builder.AddConsole().SetMinimumLevel(LogLevel.Warning);
+            builder.AddConsole().SetMinimumLevel(LogLevel.Debug);
+            builder.AddDebug();
         });
 
         // Load LLM configuration from appsettings.json, then merge environment variables
@@ -189,13 +194,16 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         // Wrap executor to capture parameters
         var capturingExecutor = new CapturingToolExecutor(toolExecutor);
 
+        // Build file structure context
+        var filesContext = BuildFileStructureContext(TestDirectory);
+
         // Build SimpleAgent
         var agentLogger = provider.GetRequiredService<ILogger<SimpleAgent>>();
         var agent = new SimpleAgent(
             capturingLlm,
             toolRegistry,
             capturingExecutor,
-            systemPrompt: "You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools.",
+            systemPrompt: $"You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools. IMPORTANT: Only access the specific directory requested by the user - do not try to access parent directories or other paths without explicit permission. After you get the results from a tool, provide a clear text response to the user summarizing what you found or accomplished.\n\nCurrent workspace file structure:\n{filesContext}",
             maxTurns: 10,
             workingDirectory: TestDirectory,
             logger: agentLogger
@@ -449,6 +457,60 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         if (scenario.Validation != null)
         {
             ValidateToolResults(result, scenario.Validation);
+        }
+    }
+
+    /// <summary>
+    /// Builds a string representation of the file structure in the test directory
+    /// </summary>
+    private string BuildFileStructureContext(string rootPath)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Working directory: {rootPath}");
+
+        try
+        {
+            BuildFileTree(rootPath, rootPath, sb, "");
+        }
+        catch (Exception ex)
+        {
+            sb.AppendLine($"Error reading file structure: {ex.Message}");
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Recursively builds file tree representation
+    /// </summary>
+    private void BuildFileTree(string rootPath, string currentPath, System.Text.StringBuilder sb, string indent)
+    {
+        try
+        {
+            var entries = Directory.GetFileSystemEntries(currentPath)
+                .OrderBy(e => Directory.Exists(e) ? 0 : 1) // Directories first
+                .ThenBy(e => Path.GetFileName(e));
+
+            foreach (var entry in entries)
+            {
+                var name = Path.GetFileName(entry);
+                var relativePath = Path.GetRelativePath(rootPath, entry);
+
+                if (Directory.Exists(entry))
+                {
+                    sb.AppendLine($"{indent}📁 {relativePath}/");
+                    BuildFileTree(rootPath, entry, sb, indent + "  ");
+                }
+                else
+                {
+                    var fileInfo = new FileInfo(entry);
+                    sb.AppendLine($"{indent}📄 {relativePath} ({fileInfo.Length} bytes)");
+                }
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Skip directories we can't access
         }
     }
 

@@ -197,19 +197,44 @@ public class SimpleAgent : IDisposable
             // Exhausted max turns
             _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
 
-            // Log conversation history to help debug why max turns was exceeded
-            _logger?.LogWarning("Conversation history at max_turns:");
+            // Build conversation history for debugging
+            var historyBuilder = new System.Text.StringBuilder();
+            historyBuilder.AppendLine($"Reached maximum turn count ({_maxTurns})");
+            historyBuilder.AppendLine("Conversation history (FULL - no truncation):");
+            historyBuilder.AppendLine("=".PadRight(80, '='));
             for (int i = 0; i < _conversationHistory.Count; i++)
             {
                 var msg = _conversationHistory[i];
-                var preview = msg.Content?.Length > 100 ? msg.Content.Substring(0, 100) + "..." : msg.Content;
-                _logger?.LogWarning("  [{Index}] {Role}: {Preview} (ToolCalls: {ToolCallCount})",
-                    i, msg.Role, preview, msg.ToolCalls?.Count ?? 0);
+                var content = msg.Content ?? "(empty)";
+                historyBuilder.AppendLine($"\n[{i}] Role: {msg.Role}");
+                historyBuilder.AppendLine($"Content: {content}");
+                historyBuilder.AppendLine($"ToolCalls Count: {msg.ToolCalls?.Count ?? 0}");
+
+                if (msg.ToolCalls != null && msg.ToolCalls.Count > 0)
+                {
+                    foreach (var toolCall in msg.ToolCalls)
+                    {
+                        historyBuilder.AppendLine($"  - Tool: {toolCall.Name}");
+                        historyBuilder.AppendLine($"    ID: {toolCall.Id}");
+                        historyBuilder.AppendLine($"    Arguments: {toolCall.ArgumentsJson}");
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(msg.ToolCallId))
+                {
+                    historyBuilder.AppendLine($"ToolCallId: {msg.ToolCallId}");
+                }
+                historyBuilder.AppendLine("-".PadRight(80, '-'));
+
+                // Also log to logger with full content
+                _logger?.LogWarning("  [{Index}] {Role}: {Content} (ToolCalls: {ToolCallCount})",
+                    i, msg.Role, content, msg.ToolCalls?.Count ?? 0);
             }
+            historyBuilder.AppendLine("=".PadRight(80, '='));
 
             return new SimpleAgentResult(
                 Success: false,
-                Response: "I've reached the maximum number of steps. Could you please rephrase your request?",
+                Response: historyBuilder.ToString(),
                 TurnCount: turnCount,
                 Duration: DateTime.UtcNow - startTime,
                 StopReason: "max_turns_exceeded"
