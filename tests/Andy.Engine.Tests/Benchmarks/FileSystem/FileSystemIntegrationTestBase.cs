@@ -87,16 +87,13 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         var mockedLlm = new MockedLlmProvider(scenario);
         var capturingLlm = new CapturingLlmProvider(mockedLlm, llmInteractions);
 
-        // Build file structure context
-        var filesContext = BuildFileStructureContext(TestDirectory);
-
         // Build SimpleAgent
         var agentLogger = ServiceProvider.GetRequiredService<ILogger<SimpleAgent>>();
         var agent = new SimpleAgent(
             capturingLlm,
             ToolRegistry,
             capturingExecutor,
-            systemPrompt: $"You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools. IMPORTANT: Only access the specific directory requested by the user - do not try to access parent directories or other paths without explicit permission. After you get the results from a tool, provide a clear text response to the user summarizing what you found or accomplished.\n\nCurrent workspace file structure:\n{filesContext}",
+            systemPrompt: "You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools. IMPORTANT: Only access the specific directory requested by the user - do not try to access parent directories or other paths without explicit permission. After you get the results from a tool, provide a clear text response to the user summarizing what you found or accomplished.",
             maxTurns: 10,
             workingDirectory: TestDirectory,
             logger: agentLogger
@@ -210,16 +207,13 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         // Wrap executor to capture parameters
         var capturingExecutor = new CapturingToolExecutor(toolExecutor);
 
-        // Build file structure context
-        var filesContext = BuildFileStructureContext(TestDirectory);
-
         // Build SimpleAgent
         var agentLogger = provider.GetRequiredService<ILogger<SimpleAgent>>();
         var agent = new SimpleAgent(
             capturingLlm,
             toolRegistry,
             capturingExecutor,
-            systemPrompt: $"You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools. IMPORTANT: Only access the specific directory requested by the user - do not try to access parent directories or other paths without explicit permission. After you get the results from a tool, provide a clear text response to the user summarizing what you found or accomplished.\n\nCurrent workspace file structure:\n{filesContext}",
+            systemPrompt: "You are a file system assistant. You have access to tools for file operations. When users ask you to perform file operations, use the provided tools to complete the task. Always use tools when available rather than explaining how to use command-line tools. IMPORTANT: Only access the specific directory requested by the user - do not try to access parent directories or other paths without explicit permission. After you get the results from a tool, provide a clear text response to the user summarizing what you found or accomplished.",
             maxTurns: 10,
             workingDirectory: TestDirectory,
             logger: agentLogger
