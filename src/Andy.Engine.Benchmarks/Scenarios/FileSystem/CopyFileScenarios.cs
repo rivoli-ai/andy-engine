@@ -26,6 +26,7 @@ public static class CopyFileScenarios
             CreateCopyToDirectory(testDirectory),
             CreateCopyWithTrailingSeparator(testDirectory),
             CreatePreserveTimestamps(testDirectory),
+            CreateFollowSymlinks(testDirectory),
             CreateCopyEmptyDirectory(testDirectory),
             CreateExcludePatterns(testDirectory),
             CreateExcludeDirectories(testDirectory),
@@ -377,6 +378,56 @@ public static class CopyFileScenarios
                         ["source_path"] = sourceFile,
                         ["destination_path"] = destFile,
                         ["preserve_timestamps"] = true
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                ResponseMustContain = new List<string> { "copied" },
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// Copy with symbolic links handling
+    /// </summary>
+    public static BenchmarkScenario CreateFollowSymlinks(string testDirectory)
+    {
+        var sourceFile = Path.Combine(testDirectory, "symlink.txt");
+        var destFile = Path.Combine(testDirectory, "symlink_copy.txt");
+
+        return new BenchmarkScenario
+        {
+            Id = "fs-copy-file-follow-symlinks",
+            Category = "file-system",
+            Description = "Copy file following symbolic links",
+            Tags = new List<string> { "file-system", "copy-file", "symlinks" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    $"Copy {sourceFile} to {destFile}, following symbolic links"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "copy_file",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["source_path"] = sourceFile,
+                        ["destination_path"] = destFile,
+                        ["follow_symlinks"] = true
                     }
                 }
             },

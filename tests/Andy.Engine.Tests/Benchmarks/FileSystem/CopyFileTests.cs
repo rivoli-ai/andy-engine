@@ -266,6 +266,44 @@ public class CopyFileTests : FileSystemIntegrationTestBase
     }
 
     [Fact]
+    public async Task CopyFile_FollowSymlinks_WithMockedLlm_Success()
+    {
+        // Arrange
+        CreateTestFile("symlink.txt", "Symlink content");
+        var scenario = CopyFileScenarios.CreateFollowSymlinks(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("follow_symlinks"));
+        Assert.True((bool)result.ToolInvocations[0].Parameters["follow_symlinks"]);
+
+        // Verify file was copied
+        var destFile = Path.Combine(TestDirectory, "symlink_copy.txt");
+        Assert.True(File.Exists(destFile));
+    }
+
+    [Fact]
+    public async Task CopyFile_FollowSymlinks_WithRealLlm_Success()
+    {
+        // Arrange
+        CreateTestFile("symlink.txt", "Symlink content");
+        var scenario = CopyFileScenarios.CreateFollowSymlinks(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+
+        // Verify file was copied
+        var destFile = Path.Combine(TestDirectory, "symlink_copy.txt");
+        Assert.True(File.Exists(destFile));
+    }
+
+    [Fact]
     public async Task CopyFile_EmptyDirectory_WithMockedLlm_Success()
     {
         // Arrange

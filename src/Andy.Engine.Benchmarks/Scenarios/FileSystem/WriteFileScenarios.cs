@@ -119,7 +119,7 @@ public static class WriteFileScenarios
                     {
                         ["file_path"] = fileToWrite,
                         ["content"] = "Additional line",
-                        ["mode"] = "append"
+                        ["append"] = true
                     }
                 }
             },

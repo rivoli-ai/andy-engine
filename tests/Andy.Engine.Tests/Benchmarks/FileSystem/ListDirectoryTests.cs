@@ -221,6 +221,36 @@ public class ListDirectoryTests : FileSystemIntegrationTestBase
     }
 
     [Fact]
+    public async Task ListDirectory_SortDescending_WithMockedLlm_Success()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateSortDescending(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.Equal("name", result.ToolInvocations[0].Parameters["sort_by"]);
+        Assert.True((bool)result.ToolInvocations[0].Parameters["sort_descending"]);
+    }
+
+    [Fact]
+    public async Task ListDirectory_SortDescending_WithRealLlm_Success()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateSortDescending(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
     public async Task ListDirectory_MaxDepth_WithMockedLlm_Success()
     {
         // Arrange

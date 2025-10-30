@@ -24,6 +24,7 @@ public static class ListDirectoryScenarios
             CreateSortedListing(testDirectory),
             CreateEmptyDirectory(testDirectory),
             CreateSortBySize(testDirectory),
+            CreateSortDescending(testDirectory),
             CreateMaxDepth(testDirectory),
             CreateDirectoryNotFound(testDirectory),
             CreateInvalidPath(testDirectory)
@@ -347,6 +348,53 @@ public static class ListDirectoryScenarios
             Validation = new ValidationConfig
             {
                 ResponseMustContain = new List<string> { "size" },
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// Sort descending by name
+    /// </summary>
+    public static BenchmarkScenario CreateSortDescending(string testDirectory)
+    {
+        return new BenchmarkScenario
+        {
+            Id = "fs-list-directory-sort-descending",
+            Category = "file-system",
+            Description = "List directory sorted in descending order",
+            Tags = new List<string> { "file-system", "list-directory", "sorting" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    $"List all files in {testDirectory}, sorted by name in descending order (Z to A)"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "list_directory",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["directory_path"] = testDirectory,
+                        ["sort_by"] = "name",
+                        ["sort_descending"] = true
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                ResponseMustContain = new List<string> { "descending", "reverse" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
