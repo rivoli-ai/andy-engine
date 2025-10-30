@@ -1,337 +1,104 @@
 using Andy.Benchmarks.Framework;
 using Andy.Benchmarks.Validators;
 using Andy.Engine.Benchmarks.Framework;
+using Andy.Engine.Benchmarks.Scenarios.FileSystem;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Andy.Engine.Tests.Benchmarks.FileSystem;
 
 /// <summary>
-/// Tests for move_file tool via the engine
-/// Validates file moving and renaming on the same filesystem
+/// Integration tests for move_file tool via the engine
+/// Executes scenarios through the Agent with both mocked and real LLM
 /// </summary>
-public class MoveFileTests : FileSystemTestBase
+public class MoveFileTests : FileSystemIntegrationTestBase
 {
-    [Fact]
-    public void MoveFile_SimpleMove_RelocatesFile()
+    public MoveFileTests(ITestOutputHelper output) : base(output)
     {
-        // Arrange
-        var sourceFile = CreateTestFile("source.txt", "Content to move");
-        var destFile = GetFullPath("moved.txt");
-
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-simple",
-            Category = "file-system",
-            Description = "Move/rename file on same filesystem",
-            Tags = new List<string> { "file-system", "move-file", "single-tool" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Move the file {sourceFile} to {destFile}"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    MaxInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = sourceFile,
-                        ["destination_path"] = destFile
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "moved", "successfully" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
-
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Equal("move_file", scenario.ExpectedTools[0].Type);
     }
 
     [Fact]
-    public void MoveFile_Rename_ChangesFilename()
+    public async Task MoveFile_BasicMove_WithMockedLlm_Success()
     {
         // Arrange
-        var oldName = CreateTestFile("old_name.txt", "File content");
-        var newName = GetFullPath("new_name.txt");
+        CreateTestFile("moveme.txt", "Content to move");
+        var scenario = MoveFileScenarios.CreateBasicFileMove(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-rename",
-            Category = "file-system",
-            Description = "Rename file in same directory",
-            Tags = new List<string> { "file-system", "move-file", "rename" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Rename {oldName} to {newName}"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = oldName,
-                        ["destination_path"] = newName
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "renamed", "moved" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Contains("rename", scenario.Description.ToLower());
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.Single(result.ToolInvocations);
+        Assert.Equal("move_file", result.ToolInvocations[0].ToolType);
+
+        // Verify file was moved
+        var sourceFile = Path.Combine(TestDirectory, "moveme.txt");
+        var destFile = Path.Combine(TestDirectory, "moved.txt");
+        Assert.False(File.Exists(sourceFile));
+        Assert.True(File.Exists(destFile));
+        Assert.Equal("Content to move", File.ReadAllText(destFile));
     }
 
     [Fact]
-    public void MoveFile_ToSubdirectory_MovesToNewLocation()
+    public async Task MoveFile_BasicMove_WithRealLlm_Success()
     {
         // Arrange
-        var sourceFile = CreateTestFile("file.txt", "Moving to subdirectory");
-        var subdir = CreateTestDirectory("archive");
-        var destFile = GetFullPath("archive/file.txt");
+        CreateTestFile("moveme.txt", "Content to move");
+        var scenario = MoveFileScenarios.CreateBasicFileMove(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-subdirectory",
-            Category = "file-system",
-            Description = "Move file to subdirectory",
-            Tags = new List<string> { "file-system", "move-file", "subdirectory" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Move {sourceFile} into the {subdir} directory"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = sourceFile,
-                        ["destination_path"] = destFile
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "moved" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Contains("archive", destFile);
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+
+        // Verify file was moved
+        var sourceFile = Path.Combine(TestDirectory, "moveme.txt");
+        var destFile = Path.Combine(TestDirectory, "moved.txt");
+        Assert.False(File.Exists(sourceFile));
+        Assert.True(File.Exists(destFile));
     }
 
     [Fact]
-    public void MoveFile_WithOverwrite_ReplacesExistingFile()
+    public async Task MoveFile_WithOverwrite_WithMockedLlm_Success()
     {
         // Arrange
-        var sourceFile = CreateTestFile("source.txt", "New content");
-        var destFile = CreateTestFile("existing.txt", "Old content");
+        CreateTestFile("moveme.txt", "New content");
+        CreateTestFile("existing.txt", "Old content");
+        var scenario = MoveFileScenarios.CreateMoveWithOverwrite(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-overwrite",
-            Category = "file-system",
-            Description = "Move file with overwrite enabled",
-            Tags = new List<string> { "file-system", "move-file", "overwrite" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Move {sourceFile} to {destFile} and overwrite the existing file"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = sourceFile,
-                        ["destination_path"] = destFile,
-                        ["overwrite"] = true
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "moved", "overwritten" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.True(scenario.ExpectedTools[0].Parameters.ContainsKey("overwrite"));
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("overwrite"));
+
+        // Verify file was moved and overwritten
+        var sourceFile = Path.Combine(TestDirectory, "moveme.txt");
+        var destFile = Path.Combine(TestDirectory, "existing.txt");
+        Assert.False(File.Exists(sourceFile));
+        Assert.Equal("New content", File.ReadAllText(destFile));
     }
 
     [Fact]
-    public void MoveFile_WithBackup_CreatesBackupBeforeOverwrite()
+    public async Task MoveFile_WithOverwrite_WithRealLlm_Success()
     {
         // Arrange
-        var sourceFile = CreateTestFile("new_version.txt", "Version 2");
-        var destFile = CreateTestFile("current.txt", "Version 1");
+        CreateTestFile("moveme.txt", "New content");
+        CreateTestFile("existing.txt", "Old content");
+        var scenario = MoveFileScenarios.CreateMoveWithOverwrite(TestDirectory);
 
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-backup",
-            Category = "file-system",
-            Description = "Move file with backup of existing destination",
-            Tags = new List<string> { "file-system", "move-file", "backup" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Move {sourceFile} to {destFile}, create a backup of the existing file first"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = sourceFile,
-                        ["destination_path"] = destFile,
-                        ["backup_existing"] = true
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "backup", "moved" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
 
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.True(scenario.ExpectedTools[0].Parameters.ContainsKey("backup_existing"));
-    }
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
 
-    [Fact]
-    public void MoveFile_Directory_MovesEntireDirectory()
-    {
-        // Arrange
-        CreateTestDirectory("source_folder");
-        CreateTestFile("source_folder/file1.txt", "File 1");
-        CreateTestFile("source_folder/file2.txt", "File 2");
-
-        var sourceDir = GetFullPath("source_folder");
-        var destDir = GetFullPath("moved_folder");
-
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-directory",
-            Category = "file-system",
-            Description = "Move entire directory",
-            Tags = new List<string> { "file-system", "move-file", "directory" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Move the directory {sourceDir} to {destDir}"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = sourceDir,
-                        ["destination_path"] = destDir
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "moved", "directory" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
-
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.Contains("directory", scenario.Description.ToLower());
-    }
-
-    [Fact]
-    public void MoveFile_CreateDestinationDirectory_AutoCreatesPath()
-    {
-        // Arrange
-        var sourceFile = CreateTestFile("data.txt", "Data content");
-        var destFile = GetFullPath("new/path/that/doesnt/exist/data.txt");
-
-        var scenario = new BenchmarkScenario
-        {
-            Id = "fs-move-file-create-path",
-            Category = "file-system",
-            Description = "Move file to non-existent directory path",
-            Tags = new List<string> { "file-system", "move-file", "auto-create" },
-            Workspace = CreateWorkspaceConfig(),
-            Context = new ContextInjection
-            {
-                Prompts = new List<string>
-                {
-                    $"Move {sourceFile} to {destFile}, creating any necessary directories"
-                }
-            },
-            ExpectedTools = new List<ExpectedToolInvocation>
-            {
-                new ExpectedToolInvocation
-                {
-                    Type = "move_file",
-                    MinInvocations = 1,
-                    Parameters = new Dictionary<string, object>
-                    {
-                        ["source_path"] = sourceFile,
-                        ["destination_path"] = destFile,
-                        ["create_destination_directory"] = true
-                    }
-                }
-            },
-            Validation = CreateValidationConfig(
-                mustContain: new List<string> { "moved", "created" }
-            ),
-            Timeout = TimeSpan.FromMinutes(1)
-        };
-
-        // Act & Assert
-        Assert.NotNull(scenario);
-        Assert.True(scenario.ExpectedTools[0].Parameters.ContainsKey("create_destination_directory"));
+        // Verify file was moved and overwritten
+        var sourceFile = Path.Combine(TestDirectory, "moveme.txt");
+        var destFile = Path.Combine(TestDirectory, "existing.txt");
+        Assert.False(File.Exists(sourceFile));
     }
 }
