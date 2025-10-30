@@ -598,7 +598,27 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
         public async Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)
         {
             var requestText = string.Join("\n", request.Messages.Select(m => $"{m.Role}: {m.Content}"));
-            var response = await _inner.CompleteAsync(request, cancellationToken);
+
+            LlmResponse response;
+            try
+            {
+                response = await _inner.CompleteAsync(request, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // If the LLM call fails, capture the error and re-throw
+                _interactions.Add(new LlmInteraction
+                {
+                    Request = requestText,
+                    Response = $"ERROR: {ex.Message}",
+                    Timestamp = DateTime.UtcNow,
+                    RequestTokens = 0,
+                    ResponseTokens = 0,
+                    Model = request.Config?.Model ?? _inner.Name ?? "unknown",
+                    ContextSize = requestText.Length
+                });
+                throw;
+            }
 
             // Capture model from request config or response
             var modelFromRequest = request.Config?.Model;
@@ -619,11 +639,8 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             }
             else
             {
-                // For real LLMs, model information should always be available
-                throw new InvalidOperationException(
-                    $"Model information not available in request config or response. " +
-                    $"Request.Config?.Model: {modelFromRequest ?? "null"}, " +
-                    $"Response.Model: {modelFromResponse ?? "null"}");
+                // For real LLMs, use provider name as fallback
+                capturedModel = _inner.Name ?? "unknown";
             }
 
             _interactions.Add(new LlmInteraction
