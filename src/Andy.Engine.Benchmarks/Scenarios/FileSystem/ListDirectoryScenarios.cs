@@ -21,7 +21,12 @@ public static class ListDirectoryScenarios
             CreateRecursiveListing(testDirectory),
             CreatePatternFiltering(testDirectory),
             CreateHiddenFileInclusion(testDirectory),
-            CreateSortedListing(testDirectory)
+            CreateSortedListing(testDirectory),
+            CreateEmptyDirectory(testDirectory),
+            CreateSortBySize(testDirectory),
+            CreateMaxDepth(testDirectory),
+            CreateDirectoryNotFound(testDirectory),
+            CreateInvalidPath(testDirectory)
         };
     }
 
@@ -249,6 +254,237 @@ public static class ListDirectoryScenarios
             Validation = new ValidationConfig
             {
                 ResponseMustContain = new List<string> { "readme.txt", "data.json" },
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// List empty directory
+    /// </summary>
+    public static BenchmarkScenario CreateEmptyDirectory(string testDirectory)
+    {
+        var emptyDir = Path.Combine(testDirectory, "empty_dir");
+
+        return new BenchmarkScenario
+        {
+            Id = "fs-list-directory-empty",
+            Category = "file-system",
+            Description = "List empty directory",
+            Tags = new List<string> { "file-system", "list-directory", "edge-case" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    $"List all files in the empty directory {emptyDir}"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "list_directory",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["directory_path"] = emptyDir
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                ResponseMustContain = new List<string> { "empty" },
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// Sort by file size
+    /// </summary>
+    public static BenchmarkScenario CreateSortBySize(string testDirectory)
+    {
+        return new BenchmarkScenario
+        {
+            Id = "fs-list-directory-sort-size",
+            Category = "file-system",
+            Description = "List directory sorted by file size",
+            Tags = new List<string> { "file-system", "list-directory", "sorting" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    $"List all files in {testDirectory}, sorted by size"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "list_directory",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["directory_path"] = testDirectory,
+                        ["sort_by"] = "size"
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                ResponseMustContain = new List<string> { "size" },
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// List with max depth limit
+    /// </summary>
+    public static BenchmarkScenario CreateMaxDepth(string testDirectory)
+    {
+        return new BenchmarkScenario
+        {
+            Id = "fs-list-directory-max-depth",
+            Category = "file-system",
+            Description = "List directory with depth limit",
+            Tags = new List<string> { "file-system", "list-directory", "depth-limit" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    $"List files in {testDirectory} recursively but only go 1 level deep"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "list_directory",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["directory_path"] = testDirectory,
+                        ["recursive"] = true,
+                        ["max_depth"] = 1
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// Directory not found error
+    /// </summary>
+    public static BenchmarkScenario CreateDirectoryNotFound(string testDirectory)
+    {
+        var nonExistentDir = Path.Combine(testDirectory, "nonexistent_directory");
+
+        return new BenchmarkScenario
+        {
+            Id = "fs-list-directory-not-found",
+            Category = "file-system",
+            Description = "List non-existent directory should fail gracefully",
+            Tags = new List<string> { "file-system", "list-directory", "error-handling" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    $"List all files in {nonExistentDir}"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "list_directory",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["directory_path"] = nonExistentDir
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                ResponseMustContain = new List<string> { "not found", "does not exist" },
+                MustNotAskUser = true
+            },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    /// <summary>
+    /// Invalid path error
+    /// </summary>
+    public static BenchmarkScenario CreateInvalidPath(string testDirectory)
+    {
+        return new BenchmarkScenario
+        {
+            Id = "fs-list-directory-invalid-path",
+            Category = "file-system",
+            Description = "List directory with invalid path should fail gracefully",
+            Tags = new List<string> { "file-system", "list-directory", "error-handling" },
+            Workspace = new WorkspaceConfig
+            {
+                Type = "directory-copy",
+                Source = testDirectory
+            },
+            Context = new ContextInjection
+            {
+                Prompts = new List<string>
+                {
+                    "List all files in an empty path ''"
+                }
+            },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation
+                {
+                    Type = "list_directory",
+                    MinInvocations = 1,
+                    MaxInvocations = 1,
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["directory_path"] = ""
+                    }
+                }
+            },
+            Validation = new ValidationConfig
+            {
+                ResponseMustContain = new List<string> { "invalid", "error" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)

@@ -162,4 +162,142 @@ public class ListDirectoryTests : FileSystemIntegrationTestBase
         // Assert
         AssertBenchmarkSuccess(result, scenario);
     }
+
+    [Fact]
+    public async Task ListDirectory_EmptyDirectory_WithMockedLlm_Success()
+    {
+        // Arrange
+        CreateTestDirectory("empty_dir");
+        var scenario = ListDirectoryScenarios.CreateEmptyDirectory(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_EmptyDirectory_WithRealLlm_Success()
+    {
+        // Arrange
+        CreateTestDirectory("empty_dir");
+        var scenario = ListDirectoryScenarios.CreateEmptyDirectory(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_SortBySize_WithMockedLlm_Success()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateSortBySize(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.Equal("size", result.ToolInvocations[0].Parameters["sort_by"]);
+    }
+
+    [Fact]
+    public async Task ListDirectory_SortBySize_WithRealLlm_Success()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateSortBySize(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_MaxDepth_WithMockedLlm_Success()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateMaxDepth(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+        Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("max_depth"));
+    }
+
+    [Fact]
+    public async Task ListDirectory_MaxDepth_WithRealLlm_Success()
+    {
+        // Arrange
+        CreateTestFileStructure();
+        var scenario = ListDirectoryScenarios.CreateMaxDepth(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_DirectoryNotFound_WithMockedLlm_HandlesError()
+    {
+        // Arrange
+        var scenario = ListDirectoryScenarios.CreateDirectoryNotFound(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_DirectoryNotFound_WithRealLlm_HandlesError()
+    {
+        // Arrange
+        var scenario = ListDirectoryScenarios.CreateDirectoryNotFound(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_InvalidPath_WithMockedLlm_HandlesError()
+    {
+        // Arrange
+        var scenario = ListDirectoryScenarios.CreateInvalidPath(TestDirectory);
+
+        // Act
+        var result = await RunWithMockedLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
+
+    [Fact]
+    public async Task ListDirectory_InvalidPath_WithRealLlm_HandlesError()
+    {
+        // Arrange
+        var scenario = ListDirectoryScenarios.CreateInvalidPath(TestDirectory);
+
+        // Act
+        var result = await RunWithRealLlmAsync(scenario);
+
+        // Assert
+        AssertBenchmarkSuccess(result, scenario);
+    }
 }
