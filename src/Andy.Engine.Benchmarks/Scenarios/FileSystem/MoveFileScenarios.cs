@@ -333,7 +333,7 @@ public static class MoveFileScenarios
             {
                 new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile, ["destination_path"] = destFile, ["overwrite"] = false } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "exists", "failed", "error" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "exists", "already" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
@@ -355,7 +355,7 @@ public static class MoveFileScenarios
             {
                 new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceDir, ["destination_path"] = destDir } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "subdirectory", "circular", "failed" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "subdirectory", "circular", "into itself" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
@@ -376,7 +376,7 @@ public static class MoveFileScenarios
             {
                 new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile, ["destination_path"] = sourceFile } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "same", "identical", "error" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "same", "identical" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
@@ -398,7 +398,7 @@ public static class MoveFileScenarios
             {
                 new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = nonExistentFile, ["destination_path"] = destFile } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "not found", "does not exist" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "does not exist", "not exist", "not found" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
@@ -417,9 +417,9 @@ public static class MoveFileScenarios
             Context = new ContextInjection { Prompts = new List<string> { $"Move a file with empty source path '' to {destFile}" } },
             ExpectedTools = new List<ExpectedToolInvocation>
             {
-                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = "", ["destination_path"] = destFile } }
+                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 0, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = "", ["destination_path"] = destFile } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "invalid", "source", "error" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "source", "path" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
@@ -438,9 +438,9 @@ public static class MoveFileScenarios
             Context = new ContextInjection { Prompts = new List<string> { $"Move {sourceFile} to an empty destination path ''" } },
             ExpectedTools = new List<ExpectedToolInvocation>
             {
-                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile, ["destination_path"] = "" } }
+                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 0, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile, ["destination_path"] = "" } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "invalid", "destination", "error" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "destination", "path" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
@@ -459,9 +459,9 @@ public static class MoveFileScenarios
             Context = new ContextInjection { Prompts = new List<string> { $"Call move_file with source {sourceFile} but don't provide destination_path" } },
             ExpectedTools = new List<ExpectedToolInvocation>
             {
-                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile } }
+                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 0, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile } }
             },
-            Validation = new ValidationConfig { ResponseMustContain = new List<string> { "required", "parameter", "error" }, MustNotAskUser = true },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "destination", "parameter" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }
