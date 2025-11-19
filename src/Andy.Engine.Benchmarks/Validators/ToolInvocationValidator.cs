@@ -162,6 +162,13 @@ public class ToolInvocationValidator : IValidator
                 actualStr = NormalizePath(actualStr);
             }
 
+            // Normalize content for comparison if this is a content parameter (trim whitespace)
+            if (IsContentParameter(paramName))
+            {
+                expectedStr = expectedStr.Trim();
+                actualStr = actualStr.Trim();
+            }
+
             if (!expectedStr.Equals(actualStr, StringComparison.OrdinalIgnoreCase))
             {
                 errors.Add(
@@ -178,6 +185,12 @@ public class ToolInvocationValidator : IValidator
         var pathParams = new[] { "path", "source_path", "destination_path", "file_path",
             "dir_path", "directory_path", "filepath", "dirpath", "source", "destination" };
         return pathParams.Any(p => paramName.Contains(p, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsContentParameter(string paramName)
+    {
+        var contentParams = new[] { "content", "data", "text", "message" };
+        return contentParams.Any(p => paramName.Equals(p, StringComparison.OrdinalIgnoreCase));
     }
 
     private string NormalizePath(string path)

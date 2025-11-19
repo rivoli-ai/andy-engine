@@ -41,6 +41,11 @@ public class ValidationConfig
     public List<string> ResponseMustContain { get; init; } = new();
 
     /// <summary>
+    /// At least one of these strings must appear in the response (OR logic)
+    /// </summary>
+    public List<string> ResponseMustContainAny { get; init; } = new();
+
+    /// <summary>
     /// Strings that must NOT appear in the response
     /// </summary>
     public List<string> ResponseMustNotContain { get; init; } = new();

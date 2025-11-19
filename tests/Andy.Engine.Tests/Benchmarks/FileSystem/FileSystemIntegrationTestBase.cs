@@ -585,6 +585,21 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
             }
         }
 
+        // Check ResponseMustContainAny (at least one must be present)
+        if (validation.ResponseMustContainAny.Count > 0)
+        {
+            var checkLocation = string.IsNullOrEmpty(toolResults) ? "agent response" : "tool results and response";
+            Output.WriteLine($"  • Checking at least one of {validation.ResponseMustContainAny.Count} string(s) in {checkLocation}:");
+            var foundAny = false;
+            foreach (var option in validation.ResponseMustContainAny)
+            {
+                var found = allContent.Contains(option, StringComparison.OrdinalIgnoreCase);
+                Output.WriteLine($"    {(found ? "✓" : "✗")} '{option}' {(found ? "found" : "NOT FOUND")}");
+                if (found) foundAny = true;
+            }
+            Assert.True(foundAny, $"Response must contain at least one of: {string.Join(", ", validation.ResponseMustContainAny.Select(s => $"'{s}'"))}\nContent checked:\n{allContent}");
+        }
+
         // Check ResponseMustNotContain
         if (validation.ResponseMustNotContain.Count > 0)
         {
