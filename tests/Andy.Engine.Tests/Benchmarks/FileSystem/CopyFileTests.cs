@@ -112,8 +112,8 @@ public class CopyFileTests : FileSystemIntegrationTestBase
     public async Task CopyFile_ToDirectory_PreservesFilename(LlmMode mode)
     {
         // Arrange
-        CreateTestFile("source.txt", "File content");
-        CreateTestDirectory("target_dir");
+        CreateTestFile("document.pdf", "File content");
+        CreateTestDirectory("documents");
         var scenario = CopyFileScenarios.CreateCopyToDirectory(TestDirectory);
 
         // Act
@@ -123,7 +123,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
         AssertBenchmarkSuccess(result, scenario);
 
         // Verify file was copied with preserved filename
-        var destFile = Path.Combine(TestDirectory, "target_dir", "source.txt");
+        var destFile = Path.Combine(TestDirectory, "documents", "document.pdf");
         Assert.True(File.Exists(destFile));
 
         if (mode == LlmMode.Mock)
@@ -162,7 +162,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
     public async Task CopyFile_PreserveTimestamps_Success(LlmMode mode)
     {
         // Arrange
-        var sourceFile = CreateTestFile("source.txt", "Content");
+        var sourceFile = CreateTestFile("timestamped.txt", "Content");
         var originalTime = new DateTime(2024, 1, 1, 12, 0, 0, DateTimeKind.Utc);
         File.SetLastWriteTimeUtc(sourceFile, originalTime);
         var scenario = CopyFileScenarios.CreatePreserveTimestamps(TestDirectory);
@@ -179,7 +179,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
         }
 
         // Verify timestamps were preserved
-        var destFile = Path.Combine(TestDirectory, "destination.txt");
+        var destFile = Path.Combine(TestDirectory, "copy.txt");
         Assert.True(File.Exists(destFile));
 
         if (mode == LlmMode.Mock)
@@ -243,10 +243,10 @@ public class CopyFileTests : FileSystemIntegrationTestBase
     public async Task CopyFile_ExcludePatterns_FiltersFiles(LlmMode mode)
     {
         // Arrange
-        CreateTestDirectory("source_dir");
-        CreateTestFile("source_dir/keep.txt", "Keep this");
-        CreateTestFile("source_dir/temp.log", "Exclude this");
-        CreateTestFile("source_dir/backup.tmp", "Exclude this too");
+        CreateTestDirectory("source_with_logs");
+        CreateTestFile("source_with_logs/keep.txt", "Keep this");
+        CreateTestFile("source_with_logs/temp.log", "Exclude this");
+        CreateTestFile("source_with_logs/backup.tmp", "Exclude this too");
         var scenario = CopyFileScenarios.CreateExcludePatterns(TestDirectory);
 
         // Act
@@ -261,7 +261,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
         }
 
         // Verify only .txt was copied, .log and .tmp were excluded
-        var destDir = Path.Combine(TestDirectory, "dest_dir");
+        var destDir = Path.Combine(TestDirectory, "dest_no_logs");
         Assert.True(File.Exists(Path.Combine(destDir, "keep.txt")));
         Assert.False(File.Exists(Path.Combine(destDir, "temp.log")));
         Assert.False(File.Exists(Path.Combine(destDir, "backup.tmp")));
@@ -272,12 +272,12 @@ public class CopyFileTests : FileSystemIntegrationTestBase
     public async Task CopyFile_ExcludeDirectories_FiltersDirectories(LlmMode mode)
     {
         // Arrange
-        CreateTestDirectory("source_dir");
-        CreateTestFile("source_dir/file.txt", "Keep this");
-        CreateTestDirectory("source_dir/.git");
-        CreateTestFile("source_dir/.git/config", "Exclude this");
-        CreateTestDirectory("source_dir/node_modules");
-        CreateTestFile("source_dir/node_modules/package.json", "Exclude this too");
+        CreateTestDirectory("project");
+        CreateTestFile("project/file.txt", "Keep this");
+        CreateTestDirectory("project/.git");
+        CreateTestFile("project/.git/config", "Exclude this");
+        CreateTestDirectory("project/node_modules");
+        CreateTestFile("project/node_modules/package.json", "Exclude this too");
         var scenario = CopyFileScenarios.CreateExcludeDirectories(TestDirectory);
 
         // Act
@@ -292,7 +292,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
         }
 
         // Verify .git and node_modules were excluded
-        var destDir = Path.Combine(TestDirectory, "dest_dir");
+        var destDir = Path.Combine(TestDirectory, "project_backup");
         Assert.True(File.Exists(Path.Combine(destDir, "file.txt")));
         Assert.False(Directory.Exists(Path.Combine(destDir, ".git")));
         Assert.False(Directory.Exists(Path.Combine(destDir, "node_modules")));
@@ -318,7 +318,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
         }
 
         // Verify nested directory structure was created
-        var destFile = Path.Combine(TestDirectory, "deep", "nested", "path", "destination.txt");
+        var destFile = Path.Combine(TestDirectory, "new_dir", "subdir", "destination.txt");
         Assert.True(File.Exists(destFile));
 
         if (mode == LlmMode.Mock)
@@ -333,7 +333,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
     {
         // Arrange
         CreateTestFile("source.txt", "New content");
-        CreateTestFile("existing.txt", "Old content");
+        CreateTestFile("existing_dest.txt", "Old content");
         var scenario = CopyFileScenarios.CreateOverwriteDisabled(TestDirectory);
 
         // Act
@@ -348,7 +348,7 @@ public class CopyFileTests : FileSystemIntegrationTestBase
         }
 
         // Verify original content was preserved (copy should have failed)
-        var destFile = Path.Combine(TestDirectory, "existing.txt");
+        var destFile = Path.Combine(TestDirectory, "existing_dest.txt");
         Assert.Equal("Old content", File.ReadAllText(destFile));
     }
 

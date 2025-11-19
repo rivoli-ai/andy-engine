@@ -62,7 +62,7 @@ public class WriteFileTests : FileSystemIntegrationTestBase
 
         if (mode == LlmMode.Mock)
         {
-            Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("mode"));
+            Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("append"));
         }
 
         // Verify content was appended
