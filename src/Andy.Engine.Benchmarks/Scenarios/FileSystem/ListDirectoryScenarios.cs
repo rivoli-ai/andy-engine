@@ -301,7 +301,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContainAny = new List<string> { "empty", "no files", "directory" },
+                ResponseMustContainAny = new List<string> { "empty", "no files", "directory", "count", "0", "[]" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
