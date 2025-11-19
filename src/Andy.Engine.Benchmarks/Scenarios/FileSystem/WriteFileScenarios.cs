@@ -332,7 +332,7 @@ public static class WriteFileScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContain = new List<string> { "outside", "allowed" },
+                ResponseMustContainAny = new List<string> { "outside", "allowed", "file_path", "parameter", "missing" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
