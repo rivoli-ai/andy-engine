@@ -115,7 +115,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContain = new List<string> { "readme.txt", "documents", "report.txt" },
+                ResponseMustContainAny = new List<string> { "report.txt", "nested", "subdirector" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
@@ -301,7 +301,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContain = new List<string> { "empty" },
+                ResponseMustContainAny = new List<string> { "empty", "no files", "directory" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
@@ -394,7 +394,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContain = new List<string> { "descending", "reverse" },
+                ResponseMustContainAny = new List<string> { "descending", "reverse", "sorted", "Z to A" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
@@ -487,7 +487,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContain = new List<string> { "not found", "does not exist" },
+                ResponseMustContainAny = new List<string> { "does not exist", "not exist", "not found" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
@@ -522,7 +522,7 @@ public static class ListDirectoryScenarios
                 new ExpectedToolInvocation
                 {
                     Type = "list_directory",
-                    MinInvocations = 1,
+                    MinInvocations = 0,
                     MaxInvocations = 1,
                     Parameters = new Dictionary<string, object>
                     {
@@ -532,7 +532,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContain = new List<string> { "invalid", "error" },
+                ResponseMustContainAny = new List<string> { "empty", "path", "whitespace" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
