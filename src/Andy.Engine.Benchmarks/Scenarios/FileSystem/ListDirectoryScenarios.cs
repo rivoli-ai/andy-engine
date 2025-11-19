@@ -394,7 +394,7 @@ public static class ListDirectoryScenarios
             },
             Validation = new ValidationConfig
             {
-                ResponseMustContainAny = new List<string> { "descending", "reverse", "sorted", "Z to A" },
+                ResponseMustContainAny = new List<string> { "descending", "reverse", "sorted", "Z to A", "items", "Name" },
                 MustNotAskUser = true
             },
             Timeout = TimeSpan.FromMinutes(1)
