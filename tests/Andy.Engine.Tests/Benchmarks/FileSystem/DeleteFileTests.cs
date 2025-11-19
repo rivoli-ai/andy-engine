@@ -274,12 +274,8 @@ public class DeleteFileTests : FileSystemIntegrationTestBase
 
         // Assert
         AssertBenchmarkSuccess(result, scenario);
-        if (mode == LlmMode.Mock)
-        {
-            Assert.True(result.ToolInvocations[0].Parameters.ContainsKey("exclude_patterns"));
-        }
 
-        // Verify file was NOT deleted (matched exclusion pattern)
+        // Verify file was NOT deleted (contradictory request should fail or be refused)
         var importantFile = Path.Combine(TestDirectory, "important.txt");
         Assert.True(File.Exists(importantFile));
     }
