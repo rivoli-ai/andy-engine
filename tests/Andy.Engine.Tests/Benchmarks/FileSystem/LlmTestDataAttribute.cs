@@ -44,7 +44,26 @@ public class LlmTestDataAttribute : DataAttribute
         if (_includeMock)
             yield return new object[] { LlmMode.Mock };
 
-        if (_includeReal)
+        if (_includeReal && IsRealLlmAvailable())
             yield return new object[] { LlmMode.Real };
+    }
+
+    /// <summary>
+    /// Checks if real LLM is available (API keys configured)
+    /// </summary>
+    private static bool IsRealLlmAvailable()
+    {
+        // Check for OpenAI API key (most common)
+        var openAiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        if (!string.IsNullOrEmpty(openAiKey))
+            return true;
+
+        // Check for Anthropic API key
+        var anthropicKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+        if (!string.IsNullOrEmpty(anthropicKey))
+            return true;
+
+        // Could add other provider checks here if needed
+        return false;
     }
 }
