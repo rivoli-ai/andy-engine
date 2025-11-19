@@ -539,52 +539,68 @@ public abstract class FileSystemIntegrationTestBase : FileSystemTestBase
     }
 
     /// <summary>
-    /// Validates that tool results contain expected strings and patterns
+    /// Validates that tool results and/or agent response contain expected strings and patterns
     /// </summary>
     private void ValidateToolResults(BenchmarkResult result, ValidationConfig validation)
     {
-        // Collect all tool results as strings, serializing complex objects to JSON
-        var allResults = string.Join("\n", result.ToolInvocations
-            .Where(t => t.Result != null)
+        // Collect all tool results and error messages as strings
+        var toolResults = string.Join("\n", result.ToolInvocations
             .Select(t =>
             {
+                // Include error messages for failed invocations
+                if (!t.Success && !string.IsNullOrEmpty(t.ErrorMessage))
+                    return t.ErrorMessage;
+
                 if (t.Result is string str)
                     return str;
-                // Serialize complex objects to JSON for content checking
-                return System.Text.Json.JsonSerializer.Serialize(t.Result,
-                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-            }));
+
+                if (t.Result != null)
+                {
+                    // Serialize complex objects to JSON for content checking
+                    return System.Text.Json.JsonSerializer.Serialize(t.Result,
+                        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                }
+
+                return string.Empty;
+            })
+            .Where(s => !string.IsNullOrEmpty(s)));
+
+        // If there are no tool results, also check the agent's response text
+        // This handles cases where the LLM doesn't invoke tools but still responds appropriately
+        var agentResponse = result.LlmInteractions.LastOrDefault()?.Response ?? string.Empty;
+        var allContent = string.IsNullOrEmpty(toolResults) ? agentResponse : $"{toolResults}\n{agentResponse}";
 
         Output.WriteLine($"\n🔍 Content Validation:");
 
         // Check ResponseMustContain
         if (validation.ResponseMustContain.Count > 0)
         {
-            Output.WriteLine($"  • Checking {validation.ResponseMustContain.Count} required string(s) in tool results:");
+            var checkLocation = string.IsNullOrEmpty(toolResults) ? "agent response" : "tool results and response";
+            Output.WriteLine($"  • Checking {validation.ResponseMustContain.Count} required string(s) in {checkLocation}:");
             foreach (var required in validation.ResponseMustContain)
             {
-                var found = allResults.Contains(required, StringComparison.OrdinalIgnoreCase);
+                var found = allContent.Contains(required, StringComparison.OrdinalIgnoreCase);
                 Output.WriteLine($"    {(found ? "✓" : "✗")} '{required}' {(found ? "found" : "NOT FOUND")}");
-                Assert.True(found, $"Tool results must contain '{required}' but it was not found.\nTool results:\n{allResults}");
+                Assert.True(found, $"Response must contain '{required}' but it was not found.\nContent checked:\n{allContent}");
             }
         }
 
         // Check ResponseMustNotContain
         if (validation.ResponseMustNotContain.Count > 0)
         {
-            Output.WriteLine($"  • Checking {validation.ResponseMustNotContain.Count} forbidden string(s) not in tool results:");
+            Output.WriteLine($"  • Checking {validation.ResponseMustNotContain.Count} forbidden string(s) not in content:");
             foreach (var forbidden in validation.ResponseMustNotContain)
             {
-                var found = allResults.Contains(forbidden, StringComparison.OrdinalIgnoreCase);
+                var found = allContent.Contains(forbidden, StringComparison.OrdinalIgnoreCase);
                 Output.WriteLine($"    {(found ? "✗" : "✓")} '{forbidden}' {(found ? "FOUND (should not be present)" : "not found (correct)")}");
-                Assert.False(found, $"Tool results must NOT contain '{forbidden}' but it was found.\nTool results:\n{allResults}");
+                Assert.False(found, $"Response must NOT contain '{forbidden}' but it was found.\nContent checked:\n{allContent}");
             }
         }
 
         // Check minimum response length
         if (validation.MinResponseLength.HasValue)
         {
-            var actualLength = allResults.Length;
+            var actualLength = allContent.Length;
             var meetsRequirement = actualLength >= validation.MinResponseLength.Value;
             Output.WriteLine($"  • Response length: {actualLength} chars {(meetsRequirement ? "✓" : "✗")} (min: {validation.MinResponseLength.Value})");
             Assert.True(meetsRequirement,

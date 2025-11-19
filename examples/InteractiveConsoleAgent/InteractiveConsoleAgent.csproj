@@ -12,8 +12,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Andy.Llm" Version="0.1.5" />
-    <PackageReference Include="Andy.Tools" Version="2025.9.5-rc.15" />
+    <PackageReference Include="Andy.Llm" Version="2025.11.19-rc.24" />
+    <PackageReference Include="Andy.Tools" Version="2025.10.16-rc.16" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.FileExtensions" Version="8.0.1" />

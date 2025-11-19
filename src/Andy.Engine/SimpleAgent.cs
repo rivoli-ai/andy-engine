@@ -165,17 +165,36 @@ public class SimpleAgent : IDisposable
                             {
                                 Role = Role.Tool,
                                 Content = resultContent,
-                                ToolCallId = toolCall.Id
+                                ToolResults = new List<Andy.Model.Model.ToolResult>
+                                {
+                                    new Andy.Model.Model.ToolResult
+                                    {
+                                        CallId = toolCall.Id,
+                                        Name = toolCall.Name,
+                                        ResultJson = resultContent,
+                                        IsError = !toolResult.IsSuccessful
+                                    }
+                                }
                             });
                         }
                         catch (Exception ex)
                         {
                             _logger?.LogError(ex, "Error executing tool {ToolName}", toolCall.Name);
+                            var errorContent = JsonSerializer.Serialize(new { success = false, error = ex.Message });
                             toolResults.Add(new Message
                             {
                                 Role = Role.Tool,
-                                Content = JsonSerializer.Serialize(new { success = false, error = ex.Message }),
-                                ToolCallId = toolCall.Id
+                                Content = errorContent,
+                                ToolResults = new List<Andy.Model.Model.ToolResult>
+                                {
+                                    new Andy.Model.Model.ToolResult
+                                    {
+                                        CallId = toolCall.Id,
+                                        Name = toolCall.Name,
+                                        ResultJson = errorContent,
+                                        IsError = true
+                                    }
+                                }
                             });
                         }
                     }
@@ -226,9 +245,12 @@ public class SimpleAgent : IDisposable
                     }
                 }
 
-                if (!string.IsNullOrEmpty(msg.ToolCallId))
+                if (msg.ToolResults != null && msg.ToolResults.Count > 0)
                 {
-                    historyBuilder.AppendLine($"ToolCallId: {msg.ToolCallId}");
+                    foreach (var toolResult in msg.ToolResults)
+                    {
+                        historyBuilder.AppendLine($"  - ToolResult: {toolResult.Name} (CallId: {toolResult.CallId}, IsError: {toolResult.IsError})");
+                    }
                 }
                 historyBuilder.AppendLine("-".PadRight(80, '-'));
 
@@ -377,7 +399,7 @@ public class SimpleAgent : IDisposable
                     JsonValueKind.False => false,
                     JsonValueKind.Null => null,
                     JsonValueKind.Object => property.Value.GetRawText(),
-                    JsonValueKind.Array => property.Value.GetRawText(),
+                    JsonValueKind.Array => DeserializeArray(property.Value),
                     _ => property.Value.GetRawText()
                 };
             }
@@ -389,6 +411,35 @@ public class SimpleAgent : IDisposable
             _logger?.LogError(ex, "Failed to parse tool arguments: {Json}", argumentsJson);
             return new Dictionary<string, object?>();
         }
+    }
+
+    private static object DeserializeArray(JsonElement arrayElement)
+    {
+        // Try to deserialize as string array first (most common case)
+        var items = new List<object>();
+        foreach (var item in arrayElement.EnumerateArray())
+        {
+            items.Add(item.ValueKind switch
+            {
+                JsonValueKind.String => item.GetString() ?? string.Empty,
+                JsonValueKind.Number => item.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null!,
+                JsonValueKind.Object => item.GetRawText(),
+                JsonValueKind.Array => DeserializeArray(item),
+                _ => item.GetRawText()
+            });
+        }
+
+        // If all items are strings, return as string array
+        if (items.All(x => x is string))
+        {
+            return items.Cast<string>().ToArray();
+        }
+
+        // Otherwise return as object array
+        return items.ToArray();
     }
 
     public void Dispose()

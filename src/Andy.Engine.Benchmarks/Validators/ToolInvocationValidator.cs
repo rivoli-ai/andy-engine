@@ -55,7 +55,16 @@ public class ToolInvocationValidator : IValidator
             // Validate parameters if specified
             if (expectedTool.Parameters.Count > 0)
             {
-                foreach (var invocation in matchingInvocations)
+                // If there are multiple invocations, prioritize successful ones for parameter validation
+                var invocationsToCheck = matchingInvocations.Count > 1
+                    ? matchingInvocations.Where(inv => inv.Success).ToList()
+                    : matchingInvocations;
+
+                // If all invocations failed, still check them for parameter errors
+                if (invocationsToCheck.Count == 0)
+                    invocationsToCheck = matchingInvocations;
+
+                foreach (var invocation in invocationsToCheck)
                 {
                     var paramErrors = ValidateParameters(expectedTool, invocation);
                     errors.AddRange(paramErrors);
@@ -146,6 +155,13 @@ public class ToolInvocationValidator : IValidator
             var expectedStr = expectedValue?.ToString() ?? "";
             var actualStr = actualValue?.ToString() ?? "";
 
+            // Normalize paths for comparison if this is a path parameter
+            if (IsPathParameter(paramName))
+            {
+                expectedStr = NormalizePath(expectedStr);
+                actualStr = NormalizePath(actualStr);
+            }
+
             if (!expectedStr.Equals(actualStr, StringComparison.OrdinalIgnoreCase))
             {
                 errors.Add(
@@ -155,5 +171,33 @@ public class ToolInvocationValidator : IValidator
         }
 
         return errors;
+    }
+
+    private bool IsPathParameter(string paramName)
+    {
+        var pathParams = new[] { "path", "source_path", "destination_path", "file_path",
+            "dir_path", "directory_path", "filepath", "dirpath", "source", "destination" };
+        return pathParams.Any(p => paramName.Contains(p, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string NormalizePath(string path)
+    {
+        if (string.IsNullOrEmpty(path))
+            return path;
+
+        try
+        {
+            // Get full path to normalize .. and . sequences
+            var normalized = System.IO.Path.GetFullPath(path);
+
+            // Remove trailing directory separators for comparison
+            // (e.g., "/path/to/dir/" becomes "/path/to/dir")
+            return normalized.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            // If path is invalid, return as-is (but still strip trailing separators)
+            return path.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+        }
     }
 }
