@@ -1,4 +1,5 @@
 using Andy.Engine.Contracts;
+using Andy.Model.Conversation;
 using Andy.Model.Llm;
 using Andy.Model.Model;
 using Andy.Model.Tooling;
@@ -22,7 +23,7 @@ public class SimpleAgent : IDisposable
     private readonly string _systemPrompt;
     private readonly int _maxTurns;
     private readonly string _workingDirectory;
-    private readonly List<Message> _conversationHistory = new();
+    private IConversationManager _conversationManager;
 
     public SimpleAgent(
         ILlmProvider llmProvider,
@@ -31,7 +32,8 @@ public class SimpleAgent : IDisposable
         string systemPrompt,
         int maxTurns = 10,
         string? workingDirectory = null,
-        ILogger<SimpleAgent>? logger = null)
+        ILogger<SimpleAgent>? logger = null,
+        IConversationManager? conversationManager = null)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -40,7 +42,18 @@ public class SimpleAgent : IDisposable
         _maxTurns = maxTurns;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
+        _conversationManager = conversationManager ?? new DefaultConversationManager();
     }
+
+    /// <summary>
+    /// The conversation manager managing conversation state.
+    /// </summary>
+    public IConversationManager ConversationManager => _conversationManager;
+
+    /// <summary>
+    /// The underlying conversation with turn-based history.
+    /// </summary>
+    public Conversation Conversation => _conversationManager.Conversation;
 
     /// <summary>
     /// Event raised when a tool is called.
@@ -59,12 +72,19 @@ public class SimpleAgent : IDisposable
 
         _logger?.LogInformation("Processing user message: {Message}", userMessage);
 
-        // Add user message to history
-        _conversationHistory.Add(new Message
+        // Prior context from conversation manager (compressed/filtered by strategy)
+        var contextMessages = _conversationManager.ExtractMessagesForNextTurn().ToList();
+
+        var userMsg = new Message
         {
             Role = Role.User,
             Content = userMessage
-        });
+        };
+
+        // In-flight messages for the current processing loop (not yet committed as a Turn)
+        var inFlightMessages = new List<Message> { userMsg };
+        var allToolMessages = new List<Message>();
+        Message? finalAssistantMessage = null;
 
         var turnCount = 0;
         var startTime = DateTime.UtcNow;
@@ -79,10 +99,11 @@ public class SimpleAgent : IDisposable
                 // Build tool declarations from registry
                 var toolDeclarations = BuildToolDeclarations();
 
-                // Make LLM request with conversation history and tools
+                // Make LLM request with prior context + in-flight messages
+                var allMessages = contextMessages.Concat(inFlightMessages).ToList();
                 var request = new LlmRequest
                 {
-                    Messages = _conversationHistory,
+                    Messages = allMessages,
                     Tools = toolDeclarations,
                     SystemPrompt = _systemPrompt,
                     Config = new LlmClientConfig
@@ -107,8 +128,9 @@ public class SimpleAgent : IDisposable
                 _logger?.LogInformation("LLM response - Content: '{Content}', HasToolCalls: {HasToolCalls}, FinishReason: {FinishReason}",
                     response.Content, response.HasToolCalls, response.FinishReason);
 
-                // Add assistant message to history
-                _conversationHistory.Add(response.AssistantMessage);
+                // Add assistant message to in-flight messages
+                inFlightMessages.Add(response.AssistantMessage);
+                finalAssistantMessage = response.AssistantMessage;
 
                 // Check if we have tool calls
                 if (response.HasToolCalls)
@@ -199,8 +221,9 @@ public class SimpleAgent : IDisposable
                         }
                     }
 
-                    // Add tool results to history
-                    _conversationHistory.AddRange(toolResults);
+                    // Add tool results to in-flight messages and track them for the Turn
+                    inFlightMessages.AddRange(toolResults);
+                    allToolMessages.AddRange(toolResults);
 
                     // Continue loop to get LLM's response to tool results
                     continue;
@@ -208,6 +231,15 @@ public class SimpleAgent : IDisposable
 
                 // No tool calls - we have a final response
                 _logger?.LogInformation("LLM provided final response");
+
+                // Record the complete turn in conversation
+                _conversationManager.AddTurn(new Turn
+                {
+                    UserOrSystemMessage = userMsg,
+                    AssistantMessage = finalAssistantMessage,
+                    ToolMessages = allToolMessages
+                });
+
                 var duration = DateTime.UtcNow - startTime;
 
                 return new SimpleAgentResult(
@@ -219,17 +251,25 @@ public class SimpleAgent : IDisposable
                 );
             }
 
-            // Exhausted max turns
+            // Exhausted max turns — still record the turn so conversation state is preserved
+            _conversationManager.AddTurn(new Turn
+            {
+                UserOrSystemMessage = userMsg,
+                AssistantMessage = finalAssistantMessage,
+                ToolMessages = allToolMessages
+            });
+
             _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
 
             // Build conversation history for debugging
+            var allConversationMessages = _conversationManager.Conversation.ToChronoMessages().ToList();
             var historyBuilder = new System.Text.StringBuilder();
             historyBuilder.AppendLine($"Reached maximum turn count ({_maxTurns})");
             historyBuilder.AppendLine("Conversation history (FULL - no truncation):");
             historyBuilder.AppendLine("=".PadRight(80, '='));
-            for (int i = 0; i < _conversationHistory.Count; i++)
+            for (int i = 0; i < allConversationMessages.Count; i++)
             {
-                var msg = _conversationHistory[i];
+                var msg = allConversationMessages[i];
                 var content = msg.Content ?? "(empty)";
                 historyBuilder.AppendLine($"\n[{i}] Role: {msg.Role}");
                 historyBuilder.AppendLine($"Content: {content}");
@@ -301,14 +341,16 @@ public class SimpleAgent : IDisposable
     /// </summary>
     public void ClearHistory()
     {
-        _conversationHistory.Clear();
+        _conversationManager.Reset();
+        _conversationManager = new DefaultConversationManager();
         _logger?.LogInformation("Conversation history cleared");
     }
 
     /// <summary>
     /// Get conversation history.
     /// </summary>
-    public IReadOnlyList<Message> GetHistory() => _conversationHistory.AsReadOnly();
+    public IReadOnlyList<Message> GetHistory() =>
+        _conversationManager.Conversation.ToChronoMessages().ToList().AsReadOnly();
 
     private IReadOnlyList<ToolDeclaration> BuildToolDeclarations()
     {
