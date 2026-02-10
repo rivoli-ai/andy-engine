@@ -72,8 +72,8 @@ public class SimpleAgent : IDisposable
 
         _logger?.LogInformation("Processing user message: {Message}", userMessage);
 
-        // Prior context from conversation manager (compressed/filtered by strategy)
-        var contextMessages = _conversationManager.ExtractMessagesForNextTurn().ToList();
+        // Prior context from conversation turns (properly interleaved)
+        var contextMessages = BuildContextFromConversation();
 
         var userMsg = new Message
         {
@@ -83,7 +83,9 @@ public class SimpleAgent : IDisposable
 
         // In-flight messages for the current processing loop (not yet committed as a Turn)
         var inFlightMessages = new List<Message> { userMsg };
-        var allToolMessages = new List<Message>();
+        // Tracks ALL intermediate messages in order: assistant(tool_calls), tool results, assistant(tool_calls), tool results, ...
+        // The final assistant message is NOT included here — it goes in Turn.AssistantMessage
+        var allInterleavedMessages = new List<Message>();
         Message? finalAssistantMessage = null;
 
         var turnCount = 0;
@@ -136,6 +138,9 @@ public class SimpleAgent : IDisposable
                 if (response.HasToolCalls)
                 {
                     _logger?.LogInformation("LLM requested {ToolCallCount} tool calls", response.ToolCalls.Count);
+
+                    // Store the intermediate assistant message (with ToolCalls) for proper context reconstruction
+                    allInterleavedMessages.Add(response.AssistantMessage);
 
                     // Execute all tool calls and collect results
                     var toolResults = new List<Message>();
@@ -223,7 +228,7 @@ public class SimpleAgent : IDisposable
 
                     // Add tool results to in-flight messages and track them for the Turn
                     inFlightMessages.AddRange(toolResults);
-                    allToolMessages.AddRange(toolResults);
+                    allInterleavedMessages.AddRange(toolResults);
 
                     // Continue loop to get LLM's response to tool results
                     continue;
@@ -233,11 +238,14 @@ public class SimpleAgent : IDisposable
                 _logger?.LogInformation("LLM provided final response");
 
                 // Record the complete turn in conversation
+                // ToolMessages contains ALL intermediate messages in order:
+                // assistant(tool_calls) → tool results → assistant(tool_calls) → tool results → ...
+                // AssistantMessage holds the final response (no tool calls)
                 _conversationManager.AddTurn(new Turn
                 {
                     UserOrSystemMessage = userMsg,
                     AssistantMessage = finalAssistantMessage,
-                    ToolMessages = allToolMessages
+                    ToolMessages = allInterleavedMessages
                 });
 
                 var duration = DateTime.UtcNow - startTime;
@@ -256,7 +264,7 @@ public class SimpleAgent : IDisposable
             {
                 UserOrSystemMessage = userMsg,
                 AssistantMessage = finalAssistantMessage,
-                ToolMessages = allToolMessages
+                ToolMessages = allInterleavedMessages
             });
 
             _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
@@ -350,7 +358,31 @@ public class SimpleAgent : IDisposable
     /// Get conversation history.
     /// </summary>
     public IReadOnlyList<Message> GetHistory() =>
-        _conversationManager.Conversation.ToChronoMessages().ToList().AsReadOnly();
+        BuildContextFromConversation().AsReadOnly();
+
+    /// <summary>
+    /// Reconstructs a properly ordered flat message list from conversation turns.
+    /// For each turn, emits: UserOrSystemMessage → ToolMessages (interleaved assistant+tool) → AssistantMessage (final).
+    /// This ensures tool result messages are always preceded by their triggering assistant message with ToolCalls.
+    /// </summary>
+    private List<Message> BuildContextFromConversation()
+    {
+        var messages = new List<Message>();
+        foreach (var turn in _conversationManager.Conversation.Turns)
+        {
+            if (turn.UserOrSystemMessage != null)
+                messages.Add(turn.UserOrSystemMessage);
+
+            // ToolMessages contains interleaved: assistant(tool_calls) → tool results → ...
+            if (turn.ToolMessages != null)
+                messages.AddRange(turn.ToolMessages);
+
+            // Final assistant message (the one without tool calls)
+            if (turn.AssistantMessage != null)
+                messages.Add(turn.AssistantMessage);
+        }
+        return messages;
+    }
 
     private IReadOnlyList<ToolDeclaration> BuildToolDeclarations()
     {
