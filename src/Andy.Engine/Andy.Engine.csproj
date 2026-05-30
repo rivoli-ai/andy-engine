@@ -36,7 +36,7 @@
 
   <ItemGroup>
     <PackageReference Include="Andy.Configuration" Version="2025.7.16-rc.6" />
-    <PackageReference Include="Andy.Llm" Version="2025.11.19-rc.24" />
+    <PackageReference Include="Andy.Llm" Version="2026.5.29-rc.31" />
     <PackageReference Include="Andy.Model" Version="2025.10.29-rc.5" />
     <PackageReference Include="Andy.Tools" Version="2025.10.16-rc.16" />
     <PackageReference Include="JsonSchema.Net" Version="7.0.0" />

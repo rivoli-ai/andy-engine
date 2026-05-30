@@ -30,8 +30,7 @@ public class SimpleAgentTruncationTests
             registry.Object,
             Mock.Of<IToolExecutor>(),
             systemPrompt: "system",
-            maxTurns: 10,
-            maxContextTokens: 200_000);
+            maxTurns: 10);
     }
 
     [Theory]
