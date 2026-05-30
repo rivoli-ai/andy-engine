@@ -47,6 +47,13 @@ public sealed class RunContext
     public double FailFastThreshold { get; init; } = 0.6;
     public int MaxConsecutiveErrors { get; init; } = 3;
 
+    /// <summary>
+    /// Gold survey mode: in gold validation, grade ALL instances and report the full pass/fail
+    /// breakdown instead of aborting on the first non-resolving gold instance. Useful for
+    /// triaging a new/large subset (genuine grader bugs vs. swebench dataset/image drift).
+    /// </summary>
+    public bool GoldSurvey { get; init; } = false;
+
     // ---- Grading ----
     public int DockerTimeoutSeconds { get; init; } = 1800;
 

@@ -163,7 +163,8 @@ public sealed class SweBenchRunner
             return "docker daemon not reachable (pre-flight failed)";
 
         var gate = new FailFastGate(
-            _ctx.FailFastWindow, _ctx.FailFastThreshold, _ctx.MaxConsecutiveErrors, _ctx.IsGoldValidation);
+            _ctx.FailFastWindow, _ctx.FailFastThreshold, _ctx.MaxConsecutiveErrors,
+            goldMode: _ctx.IsGoldValidation && !_ctx.GoldSurvey);
 
         var grader = new DockerGrader(_docker, timeout: TimeSpan.FromSeconds(_ctx.DockerTimeoutSeconds));
         var logWriter = new PerInstanceLogWriter(_ctx.RunDir);

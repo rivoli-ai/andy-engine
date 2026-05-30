@@ -25,6 +25,7 @@ public static class SweBenchCliOptions
         Stage:
           --stage none|agent|grade|all   Default: all
           --predictions-path <path|gold> Grade an existing predictions.jsonl, or "gold"
+          --gold-survey               Gold mode: grade ALL instances (no fail-fast on first non-resolve)
 
         Model / provider (agent stage):
           --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
@@ -97,6 +98,7 @@ public static class SweBenchCliOptions
             RunId = Get(map, "run-id") ?? defaultRunId,
             Reporters = reporters,
             Resume = flags.Contains("resume"),
+            GoldSurvey = flags.Contains("gold-survey"),
             KeepWorkspaces = flags.Contains("keep-workspaces"),
         };
     }
