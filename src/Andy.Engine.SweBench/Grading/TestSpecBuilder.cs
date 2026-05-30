@@ -68,9 +68,10 @@ public sealed class TestSpecBuilder
     private static IReadOnlyList<string> GetTestDirectives(SweBenchInstance instance) =>
         instance.Repo == "django/django"
             ? DiffUtil.GetDjangoTestDirectives(instance.TestPatch)
-            // Generic default: the changed test file paths (non-django repos handled when added).
-            : DiffUtil.GetModifiedFiles(instance.TestPatch)
-                .Concat(DiffUtil.GetNewFiles(instance.TestPatch))
+            // Generic default (swebench get_test_directives): the "b/" target paths from the test
+            // patch, so a renamed test file (e.g. py3_test_x.py -> test_x.py) resolves to the NEW
+            // file that exists when tests run, not the deleted source path.
+            : DiffUtil.GetDiffTargetFiles(instance.TestPatch)
                 .Where(p => !EvalConstants.NonTestExts.Any(e => p.EndsWith(e, StringComparison.Ordinal)))
                 .ToList();
 

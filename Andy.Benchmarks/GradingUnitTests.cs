@@ -133,4 +133,23 @@ public class GradingUnitTests
         var directives = DiffUtil.GetDjangoTestDirectives(testPatch);
         Assert.Equal(new[] { "auth_tests.test_validators" }, directives);
     }
+
+    [Fact]
+    public void DiffUtil_GetDiffTargetFiles_Uses_Renamed_Target_Not_Source()
+    {
+        // astropy-7336: the test patch renames py3_test_quantity_annotations.py to the new name.
+        // The directive must be the "b/" target (the file that exists when tests run).
+        const string testPatch =
+            "diff --git a/astropy/units/tests/py3_test_quantity_annotations.py b/astropy/units/tests/test_quantity_annotations.py\n" +
+            "similarity index 95%\n" +
+            "rename from astropy/units/tests/py3_test_quantity_annotations.py\n" +
+            "rename to astropy/units/tests/test_quantity_annotations.py\n" +
+            "--- a/astropy/units/tests/py3_test_quantity_annotations.py\n" +
+            "+++ b/astropy/units/tests/test_quantity_annotations.py\n" +
+            "@@\n+def test_x(): pass\n";
+
+        var targets = DiffUtil.GetDiffTargetFiles(testPatch);
+
+        Assert.Equal(new[] { "astropy/units/tests/test_quantity_annotations.py" }, targets);
+    }
 }

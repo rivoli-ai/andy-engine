@@ -11,6 +11,19 @@ public static partial class DiffUtil
     [GeneratedRegex(@"^diff --git a/.* b/(.*)$", RegexOptions.Multiline)]
     private static partial Regex DiffGitTargetRegex();
 
+    /// <summary>
+    /// The "b/" target paths from each "diff --git a/.. b/.." line — swebench get_test_directives.
+    /// This is the post-patch path, so renames (e.g. py3_test_x.py -&gt; test_x.py) resolve to the
+    /// NEW file that actually exists when tests run, unlike the "--- a/" source path.
+    /// </summary>
+    public static IReadOnlyList<string> GetDiffTargetFiles(string patch)
+    {
+        var result = new List<string>();
+        foreach (Match m in DiffGitTargetRegex().Matches(patch))
+            result.Add(m.Groups[1].Value.Trim());
+        return result;
+    }
+
     /// <summary>Files modified by the patch (source != /dev/null), as repo-relative paths.</summary>
     public static IReadOnlyList<string> GetModifiedFiles(string patch)
     {
