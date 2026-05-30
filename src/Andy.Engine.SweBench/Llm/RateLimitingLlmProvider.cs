@@ -45,11 +45,12 @@ public sealed class RateLimitingLlmProvider : ILlmProvider
             {
                 return await _inner.CompleteAsync(request, cancellationToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException && RateLimitPolicy.IsTransient(ex.Message))
+            catch (Exception ex) when (ex is not OperationCanceledException && RateLimitPolicy.IsTransient(ex))
             {
                 // Provider-agnostic: andy-llm's OpenRouter provider raises InvalidOperationException
                 // with "(status 429)", while the OpenAI-SDK path raises ClientResultException with
-                // "Status: 429". Both are recognized by IsTransient.
+                // "Status: 429". Both are recognized by IsTransient. A malformed/empty response body
+                // (JsonException, e.g. a truncated stream) is also retried.
                 lastError = ex.Message;
                 if (attempt == _policy.MaxRetries)
                     break;

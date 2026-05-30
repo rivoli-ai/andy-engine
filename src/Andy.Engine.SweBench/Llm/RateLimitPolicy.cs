@@ -19,7 +19,25 @@ public sealed partial class RateLimitPolicy
     [GeneratedRegex(@"(?:\(status\s+|status[:\s]+(?:code\s+)?|http\s+)(\d{3})", RegexOptions.IgnoreCase)]
     private static partial Regex StatusRegex();
 
-    /// <summary>True if the error message indicates a retryable condition (429 or 5xx).</summary>
+    /// <summary>
+    /// True if the exception indicates a retryable condition: a 429/5xx, or a malformed/empty
+    /// API response body. A truncated stream, an empty body, or an HTML error page from a gateway
+    /// surfaces as a JSON parse failure (System.Text.Json.JsonException) — transient, since a
+    /// retry usually returns valid JSON. Walks the inner-exception chain so wrapped failures count.
+    /// </summary>
+    public static bool IsTransient(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.Text.Json.JsonException)
+                return true;
+            if (IsTransient(e.Message))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>True if the error message indicates a retryable condition (429, 5xx, or malformed response).</summary>
     public static bool IsTransient(string message)
     {
         if (string.IsNullOrEmpty(message))
@@ -32,7 +50,10 @@ public sealed partial class RateLimitPolicy
         // Fall back to textual hints when no explicit status is present.
         return message.Contains("429", StringComparison.Ordinal)
             || message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("rate limit", StringComparison.OrdinalIgnoreCase);
+            || message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
+            // Malformed/empty response body parsed as JSON (transient — retry usually recovers).
+            || message.Contains("does not contain any JSON tokens", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("is invalid JSON", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

@@ -19,6 +19,34 @@ public class RateLimitTests
     }
 
     [Fact]
+    public void Policy_Treats_Malformed_Json_Response_As_Transient()
+    {
+        // A truncated/empty API response body surfaces as a JSON parse failure (observed live:
+        // mimo-v2.5 returned a body that killed an agent turn). It should be retried.
+        Assert.True(RateLimitPolicy.IsTransient(
+            "The input does not contain any JSON tokens. Expected the input to start with a valid JSON token, when isFinalBlock is true."));
+        Assert.True(RateLimitPolicy.IsTransient(new System.Text.Json.JsonException("boom")));
+        // Wrapped JsonException (provider may rethrow) is still detected via the inner chain.
+        Assert.True(RateLimitPolicy.IsTransient(
+            new InvalidOperationException("parse failed", new System.Text.Json.JsonException("boom"))));
+        // A non-JSON, non-status error stays non-transient.
+        Assert.False(RateLimitPolicy.IsTransient(new InvalidOperationException("bad key (status 401)")));
+    }
+
+    [Fact]
+    public async Task Decorator_Retries_Malformed_Json_Then_Succeeds()
+    {
+        var provider = new JsonFailProvider(failures: 2);
+        var policy = new RateLimitPolicy { MaxRetries = 5, BaseDelay = TimeSpan.Zero, MaxDelay = TimeSpan.Zero };
+        var sut = new RateLimitingLlmProvider(provider, policy, delay: (_, _) => Task.CompletedTask);
+
+        var response = await sut.CompleteAsync(NewRequest());
+
+        Assert.Equal(3, provider.Calls); // 2 JSON failures + 1 success
+        Assert.Equal("ok", response.Content);
+    }
+
+    [Fact]
     public async Task Decorator_Retries_429_Then_Succeeds()
     {
         var provider = new FlakyProvider(failures: 2, statusCode: 429);
@@ -78,6 +106,37 @@ public class RateLimitTests
             Calls++;
             if (Calls <= _failures)
                 throw new InvalidOperationException($"request failed (status {_statusCode}): boom");
+            return Task.FromResult(new LlmResponse
+            {
+                AssistantMessage = new Message { Role = Role.Assistant, Content = "ok" },
+            });
+        }
+
+        public IAsyncEnumerable<LlmStreamResponse> StreamCompleteAsync(LlmRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+
+        public Task<IEnumerable<ModelInfo>> ListModelsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Enumerable.Empty<ModelInfo>());
+    }
+
+    // Throws a JSON parse failure (malformed/empty response body) for the first N calls.
+    private sealed class JsonFailProvider : ILlmProvider
+    {
+        private readonly int _failures;
+        public int Calls { get; private set; }
+
+        public JsonFailProvider(int failures) => _failures = failures;
+
+        public string Name => "jsonflaky";
+
+        public Task<LlmResponse> CompleteAsync(LlmRequest request, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            if (Calls <= _failures)
+                throw new System.Text.Json.JsonException(
+                    "The input does not contain any JSON tokens. Expected the input to start with a valid JSON token, when isFinalBlock is true.");
             return Task.FromResult(new LlmResponse
             {
                 AssistantMessage = new Message { Role = Role.Assistant, Content = "ok" },
