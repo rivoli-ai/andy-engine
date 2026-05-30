@@ -211,6 +211,12 @@ public class SimpleAgent : IDisposable
                                 }
                             });
                         }
+                        catch (OperationCanceledException)
+                        {
+                            // Cancellation is not a tool failure; propagate so callers can
+                            // distinguish "cancelled" from "the tool errored".
+                            throw;
+                        }
                         catch (Exception ex)
                         {
                             _logger?.LogError(ex, "Error executing tool {ToolName}", toolCall.Name);
@@ -342,6 +348,13 @@ public class SimpleAgent : IDisposable
                 Duration: DateTime.UtcNow - startTime,
                 StopReason: "max_turns_exceeded"
             );
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation must surface to callers as a cancellation, not be masked as a
+            // failed SimpleAgentResult. Consumers (e.g. the headless cancel protocol) rely
+            // on OperationCanceledException propagating out of ProcessMessageAsync.
+            throw;
         }
         catch (Exception ex)
         {
