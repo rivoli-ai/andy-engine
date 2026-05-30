@@ -13,6 +13,7 @@ public sealed class LogParserRegistry
         _byRepo = new Dictionary<string, ITestLogParser>(StringComparer.Ordinal)
         {
             ["django/django"] = new DjangoLogParser(),
+            ["astropy/astropy"] = new PytestLogParser(),
         };
     }
 

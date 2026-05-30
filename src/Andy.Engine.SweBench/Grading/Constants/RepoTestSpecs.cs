@@ -19,10 +19,21 @@ public static class RepoTestSpecs
         "export LC_ALL=en_US.UTF-8",
     };
 
+    // astropy uses pytest. NOTE: swebench's constants/python.py defines TEST_PYTEST twice — first
+    // as "pytest --no-header -rA --tb=no -p no:cacheprovider", then redefines it to a bare
+    // "pytest -rA". The prebuilt eval images (which we reuse) were validated against the FULLER
+    // command: "--no-header" is required, because astropy's pytest-header plugin otherwise
+    // escalates the nose-style `setup(self)` deprecation to an error, failing whole test classes
+    // (e.g. astropy 3.1 test_header.py). So we use the fuller TEST_PYTEST that matches the images.
+    private const string TestPytest = "pytest --no-header -rA --tb=no -p no:cacheprovider";
+    private const string TestAstropyPytest = "pytest -rA -vv -o console_output_style=classic --tb=no";
+    private const string AstropyInstall = "python -m pip install -e .[test] --verbose";
+
     private static readonly Dictionary<string, Dictionary<string, RepoTestSpec>> Map =
         new(StringComparer.Ordinal)
         {
             ["django/django"] = BuildDjango(),
+            ["astropy/astropy"] = BuildAstropy(),
         };
 
     /// <summary>Look up the spec for an instance's repo+version, or null if unknown.</summary>
@@ -73,6 +84,21 @@ public static class RepoTestSpecs
 
         // Per-version override: 1.9 runs without --settings/--parallel.
         d["1.9"] = d["1.9"] with { TestCmd = TestDjangoNoParallel };
+
+        return d;
+    }
+
+    private static Dictionary<string, RepoTestSpec> BuildAstropy()
+    {
+        var d = new Dictionary<string, RepoTestSpec>(StringComparer.Ordinal);
+
+        // 3.0-5.2 (and v5.3): test_cmd = TEST_PYTEST, editable test install. No eval_commands.
+        foreach (var v in new[] { "3.0", "3.1", "3.2", "4.1", "4.2", "4.3", "5.0", "5.1", "5.2" })
+            d[v] = new RepoTestSpec { TestCmd = TestPytest, Install = AstropyInstall };
+
+        // 0.1-1.3: test_cmd = TEST_ASTROPY_PYTEST (verbose/classic output).
+        foreach (var v in new[] { "1.1", "1.2", "1.3" })
+            d[v] = new RepoTestSpec { TestCmd = TestAstropyPytest, Install = AstropyInstall };
 
         return d;
     }
