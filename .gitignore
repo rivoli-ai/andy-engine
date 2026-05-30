@@ -82,3 +82,5 @@ container/rootfs-safe/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+# SWE-bench run outputs
+swebench-runs/

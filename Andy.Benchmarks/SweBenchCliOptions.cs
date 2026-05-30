@@ -1,0 +1,157 @@
+using Andy.Engine.SweBench.Dataset;
+using Andy.Engine.SweBench.Orchestration;
+
+namespace Andy.Benchmarks;
+
+/// <summary>
+/// Parses command-line arguments into a <see cref="RunContext"/>. Minimal, dependency-free
+/// "--flag value" / "--flag=value" parsing.
+/// </summary>
+public static class SweBenchCliOptions
+{
+    public static string Usage =>
+        """
+        Andy SWE-bench runner
+
+        Usage:
+          dotnet run --project Andy.Benchmarks -- --dataset <path> [options]
+
+        Selection:
+          --dataset <path>            Path to SWE-bench dataset (.jsonl or .json)   [required]
+          --max-instances <n>         Cap the subset to the first n instances
+          --instance-ids <a,b,c>      Comma-separated instance ids to run
+          --subset-file <path>        File with one instance id per line (# comments ok)
+
+        Stage:
+          --stage none|agent|grade|all   Default: all
+          --predictions-path <path|gold> Grade an existing predictions.jsonl, or "gold"
+
+        Model / provider (agent stage):
+          --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
+          --provider-base <url>       Default: https://openrouter.ai/api/v1
+          --max-turns <n>             Default: 40
+          --max-output-tokens <n>     Per-response output-token cap (default: 8192; raise for reasoning models)
+
+        Rate-limit:
+          --max-retries <n>           Default: 6
+          --max-delay-seconds <n>     Default: 60
+
+        Fail-fast:
+          --fail-fast-window <n>      Default: 5
+          --fail-fast-threshold <f>   Default: 0.6
+          --max-consecutive-errors <n>  Default: 3
+
+        Grading:
+          --docker-timeout-seconds <n>  Default: 1800
+
+        Output:
+          --work-dir <path>           Default: ./swebench-runs
+          --run-id <name>             Default: timestamp
+          --reporter <c,j,h>          console,json,html  (default: console,json)
+          --resume                    Skip instances already in predictions.jsonl
+          --keep-workspaces           Keep per-instance workspaces for debugging
+          -h | --help                 Show this help
+        """;
+
+    public static bool WantsHelp(string[] args) =>
+        args.Any(a => a is "-h" or "--help");
+
+    public static RunContext Parse(string[] args, string defaultRunId)
+    {
+        var map = ToMap(args, out var flags);
+
+        var dataset = Require(map, "dataset");
+
+        IReadOnlyList<string>? instanceIds = null;
+        if (map.TryGetValue("instance-ids", out var idsRaw) && !string.IsNullOrWhiteSpace(idsRaw))
+            instanceIds = idsRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        var subset = new SubsetSelector
+        {
+            InstanceIds = instanceIds,
+            SubsetFilePath = Get(map, "subset-file"),
+            MaxInstances = GetInt(map, "max-instances"),
+        };
+
+        var reporters = map.TryGetValue("reporter", out var rep) && !string.IsNullOrWhiteSpace(rep)
+            ? rep.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : new[] { "console", "json" };
+
+        return new RunContext
+        {
+            DatasetPath = dataset,
+            Subset = subset,
+            Stage = ParseStage(Get(map, "stage")),
+            PredictionsPath = Get(map, "predictions-path"),
+            Model = Get(map, "model") ?? "openai/gpt-oss-20b:free",
+            ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
+            MaxTurns = GetInt(map, "max-turns") ?? 40,
+            MaxOutputTokens = GetInt(map, "max-output-tokens") ?? 8192,
+            MaxRetries = GetInt(map, "max-retries") ?? 6,
+            MaxDelaySeconds = GetInt(map, "max-delay-seconds") ?? 60,
+            FailFastWindow = GetInt(map, "fail-fast-window") ?? 5,
+            FailFastThreshold = GetDouble(map, "fail-fast-threshold") ?? 0.6,
+            MaxConsecutiveErrors = GetInt(map, "max-consecutive-errors") ?? 3,
+            DockerTimeoutSeconds = GetInt(map, "docker-timeout-seconds") ?? 1800,
+            WorkDir = Get(map, "work-dir") ?? Path.Combine(Directory.GetCurrentDirectory(), "swebench-runs"),
+            RunId = Get(map, "run-id") ?? defaultRunId,
+            Reporters = reporters,
+            Resume = flags.Contains("resume"),
+            KeepWorkspaces = flags.Contains("keep-workspaces"),
+        };
+    }
+
+    private static RunStage ParseStage(string? value) => (value ?? "all").ToLowerInvariant() switch
+    {
+        "none" => RunStage.None,
+        "agent" => RunStage.Agent,
+        "grade" => RunStage.Grade,
+        "all" => RunStage.All,
+        _ => throw new ArgumentException($"Unknown --stage '{value}'. Expected none|agent|grade|all."),
+    };
+
+    private static Dictionary<string, string> ToMap(string[] args, out HashSet<string> flags)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        flags = new HashSet<string>(StringComparer.Ordinal);
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (!arg.StartsWith("--", StringComparison.Ordinal))
+                continue;
+
+            var key = arg[2..];
+            var eq = key.IndexOf('=');
+            if (eq >= 0)
+            {
+                map[key[..eq]] = key[(eq + 1)..];
+                continue;
+            }
+
+            // Boolean flag if next token is missing or another option.
+            if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                flags.Add(key);
+            }
+            else
+            {
+                map[key] = args[++i];
+            }
+        }
+
+        return map;
+    }
+
+    private static string? Get(Dictionary<string, string> map, string key) =>
+        map.TryGetValue(key, out var v) ? v : null;
+
+    private static string Require(Dictionary<string, string> map, string key) =>
+        Get(map, key) ?? throw new ArgumentException($"Missing required option --{key}.");
+
+    private static int? GetInt(Dictionary<string, string> map, string key) =>
+        Get(map, key) is { } s ? int.Parse(s) : null;
+
+    private static double? GetDouble(Dictionary<string, string> map, string key) =>
+        Get(map, key) is { } s ? double.Parse(s, System.Globalization.CultureInfo.InvariantCulture) : null;
+}

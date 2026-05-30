@@ -22,6 +22,7 @@ public class SimpleAgent : IDisposable
     private readonly ILogger<SimpleAgent>? _logger;
     private readonly string _systemPrompt;
     private readonly int _maxTurns;
+    private readonly int _maxOutputTokens;
     private readonly string _workingDirectory;
     private IConversationManager _conversationManager;
 
@@ -33,13 +34,15 @@ public class SimpleAgent : IDisposable
         int maxTurns = 10,
         string? workingDirectory = null,
         ILogger<SimpleAgent>? logger = null,
-        IConversationManager? conversationManager = null)
+        IConversationManager? conversationManager = null,
+        int maxOutputTokens = 4096)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _toolExecutor = toolExecutor ?? throw new ArgumentNullException(nameof(toolExecutor));
         _systemPrompt = systemPrompt ?? throw new ArgumentNullException(nameof(systemPrompt));
         _maxTurns = maxTurns;
+        _maxOutputTokens = maxOutputTokens;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _conversationManager = conversationManager ?? new DefaultConversationManager();
@@ -111,7 +114,7 @@ public class SimpleAgent : IDisposable
                     Config = new LlmClientConfig
                     {
                         // Temperature defaults to null, allowing models to use their own defaults
-                        MaxTokens = 4096,
+                        MaxTokens = _maxOutputTokens,
                         TopP = 1.0m
                     }
                 };
@@ -169,7 +172,11 @@ public class SimpleAgent : IDisposable
                                 {
                                     WorkingDirectory = _workingDirectory,
                                     Environment = new Dictionary<string, string>(),
-                                    CancellationToken = cancellationToken
+                                    CancellationToken = cancellationToken,
+                                    // The default 100MB cap is measured process-wide and is
+                                    // exceeded by the .NET runtime alone, producing spurious
+                                    // "resource limit exceeded" warnings on ordinary file ops.
+                                    ResourceLimits = new ToolResourceLimits { MaxMemoryBytes = 2L * 1024 * 1024 * 1024 }
                                 }
                             );
 
@@ -231,6 +238,26 @@ public class SimpleAgent : IDisposable
                     allInterleavedMessages.AddRange(toolResults);
 
                     // Continue loop to get LLM's response to tool results
+                    continue;
+                }
+
+                // No tool calls, but the turn was cut off by the output-token limit
+                // (FinishReason "length"/"max_tokens"). The model was interrupted mid-task,
+                // NOT finished — treating this as a final answer ends the run with a partial
+                // or empty result (e.g. an empty patch). Nudge it to continue instead. This is
+                // bounded by _maxTurns, so it cannot loop forever.
+                if (IsTruncatedByOutputLimit(response.FinishReason))
+                {
+                    _logger?.LogWarning(
+                        "LLM response truncated by output-token limit (FinishReason: {FinishReason}) on turn {TurnCount}; continuing.",
+                        response.FinishReason, turnCount);
+                    inFlightMessages.Add(new Message
+                    {
+                        Role = Role.User,
+                        Content = "Your previous response was cut off by the output limit before you "
+                                + "produced a tool call or a complete answer. Continue from where you "
+                                + "left off and make the necessary tool calls to apply your change.",
+                    });
                     continue;
                 }
 
@@ -453,17 +480,55 @@ public class SimpleAgent : IDisposable
         return declarations;
     }
 
+    /// <summary>
+    /// True when a finish reason indicates the response was cut off by the output-token limit
+    /// (rather than the model choosing to stop). Providers report this as "length" (OpenAI/
+    /// OpenRouter) or "max_tokens" (Anthropic).
+    /// </summary>
+    internal static bool IsTruncatedByOutputLimit(string? finishReason) =>
+        finishReason is not null &&
+        (finishReason.Equals("length", StringComparison.OrdinalIgnoreCase) ||
+         finishReason.Equals("max_tokens", StringComparison.OrdinalIgnoreCase));
+
     private Dictionary<string, object?> ParseToolArguments(string argumentsJson)
     {
         if (string.IsNullOrWhiteSpace(argumentsJson))
             return new Dictionary<string, object?>();
 
+        // Smaller / weaker models frequently wrap the JSON in markdown fences, add prose,
+        // leave trailing commas, or double-encode it as a JSON string. Try a series of
+        // best-effort repairs so a recoverable tool call is not silently dropped.
+        foreach (var candidate in JsonRepairCandidates(argumentsJson))
+        {
+            if (TryExtractArguments(candidate, out var args))
+                return args;
+        }
+
+        _logger?.LogWarning("Could not parse tool arguments as a JSON object; using empty args. Raw: {Json}",
+            argumentsJson.Length > 500 ? argumentsJson[..500] + "…" : argumentsJson);
+        return new Dictionary<string, object?>();
+    }
+
+    /// <summary>Attempts to parse one candidate string into an argument dictionary (unwrapping a double-encoded JSON string).</summary>
+    private bool TryExtractArguments(string candidate, out Dictionary<string, object?> args)
+    {
+        args = new Dictionary<string, object?>();
         try
         {
-            var jsonDoc = JsonDocument.Parse(argumentsJson);
-            var args = new Dictionary<string, object?>();
+            using var doc = JsonDocument.Parse(candidate);
+            var root = doc.RootElement;
 
-            foreach (var property in jsonDoc.RootElement.EnumerateObject())
+            // Double-encoded: the arguments are a JSON string that itself holds an object.
+            if (root.ValueKind == JsonValueKind.String)
+            {
+                var inner = root.GetString();
+                return !string.IsNullOrWhiteSpace(inner) && TryExtractArguments(inner!, out args);
+            }
+
+            if (root.ValueKind != JsonValueKind.Object)
+                return false;
+
+            foreach (var property in root.EnumerateObject())
             {
                 args[property.Name] = property.Value.ValueKind switch
                 {
@@ -477,15 +542,60 @@ public class SimpleAgent : IDisposable
                     _ => property.Value.GetRawText()
                 };
             }
-
-            return args;
+            return true;
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            _logger?.LogError(ex, "Failed to parse tool arguments: {Json}", argumentsJson);
-            return new Dictionary<string, object?>();
+            return false;
         }
     }
+
+    /// <summary>Yields progressively-repaired candidate strings to attempt JSON parsing on.</summary>
+    internal static IEnumerable<string> JsonRepairCandidates(string raw)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        string Emit(string s) => s.Trim();
+
+        // 1. As-is.
+        var asIs = Emit(raw);
+        if (seen.Add(asIs)) yield return asIs;
+
+        // 2. Strip a markdown code fence (```json ... ``` or ``` ... ```).
+        var fenced = StripCodeFence(asIs);
+        if (fenced != asIs && seen.Add(fenced)) yield return fenced;
+
+        // 3. The substring spanning the first '{' to the last '}'.
+        var braced = ExtractOutermostBraces(fenced);
+        if (braced is not null && seen.Add(braced)) yield return braced;
+
+        // 4. Remove trailing commas before } or ].
+        var candidate = braced ?? fenced;
+        var noTrailingCommas = TrailingCommaRegex.Replace(candidate, "$1");
+        if (noTrailingCommas != candidate && seen.Add(noTrailingCommas)) yield return noTrailingCommas;
+    }
+
+    private static string StripCodeFence(string s)
+    {
+        if (!s.Contains("```", StringComparison.Ordinal))
+            return s;
+        var first = s.IndexOf("```", StringComparison.Ordinal);
+        var afterOpen = s.IndexOf('\n', first);
+        if (afterOpen < 0) return s;
+        var close = s.IndexOf("```", afterOpen, StringComparison.Ordinal);
+        var body = close < 0 ? s[(afterOpen + 1)..] : s[(afterOpen + 1)..close];
+        return body.Trim();
+    }
+
+    private static string? ExtractOutermostBraces(string s)
+    {
+        var open = s.IndexOf('{');
+        var close = s.LastIndexOf('}');
+        return open >= 0 && close > open ? s[open..(close + 1)] : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex TrailingCommaRegex =
+        new(@",(\s*[}\]])", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private static object DeserializeArray(JsonElement arrayElement)
     {
