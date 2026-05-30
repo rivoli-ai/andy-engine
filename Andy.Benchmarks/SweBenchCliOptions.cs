@@ -30,7 +30,6 @@ public static class SweBenchCliOptions
           --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
           --provider-base <url>       Default: https://openrouter.ai/api/v1
           --max-turns <n>             Default: 40
-          --max-context-tokens <n>    Context budget for Andy.Context compression (default: 200000)
           --max-output-tokens <n>     Per-response output-token cap (default: 8192; raise for reasoning models)
 
         Rate-limit:
@@ -87,7 +86,6 @@ public static class SweBenchCliOptions
             Model = Get(map, "model") ?? "openai/gpt-oss-20b:free",
             ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
             MaxTurns = GetInt(map, "max-turns") ?? 40,
-            MaxContextTokens = GetInt(map, "max-context-tokens") ?? 200_000,
             MaxOutputTokens = GetInt(map, "max-output-tokens") ?? 8192,
             MaxRetries = GetInt(map, "max-retries") ?? 6,
             MaxDelaySeconds = GetInt(map, "max-delay-seconds") ?? 60,

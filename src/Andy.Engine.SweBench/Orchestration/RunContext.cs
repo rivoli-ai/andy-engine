@@ -31,9 +31,6 @@ public sealed class RunContext
     public string ProviderBaseUrl { get; init; } = "https://openrouter.ai/api/v1";
     public int MaxTurns { get; init; } = 40;
 
-    /// <summary>Context token budget (coarse ~4-chars/token units) used by Andy.Context compression.</summary>
-    public int MaxContextTokens { get; init; } = 200_000;
-
     /// <summary>
     /// Per-response output-token cap sent to the model. Must be large enough to fit a reasoning
     /// model's hidden reasoning plus a complete tool call; too low truncates turns (FinishReason
