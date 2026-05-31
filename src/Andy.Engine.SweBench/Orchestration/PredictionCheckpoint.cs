@@ -34,7 +34,20 @@ public sealed class PredictionCheckpoint
             var line = raw.Trim();
             if (line.Length == 0)
                 continue;
-            var pred = JsonSerializer.Deserialize<SwePrediction>(line, Options);
+
+            // A checkpoint is appended incrementally and a run can be killed mid-write, leaving a
+            // truncated final line; a line may also be partially corrupt. Skip such lines rather
+            // than aborting resume/grade — a malformed line just means that instance is re-run.
+            SwePrediction? pred;
+            try
+            {
+                pred = JsonSerializer.Deserialize<SwePrediction>(line, Options);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
             if (pred is not null && !string.IsNullOrEmpty(pred.InstanceId))
                 map[pred.InstanceId] = pred;
         }

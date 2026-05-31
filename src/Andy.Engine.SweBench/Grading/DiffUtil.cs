@@ -93,10 +93,12 @@ public static partial class DiffUtil
         }
     }
 
-    // Diff header paths may carry a trailing tab + timestamp; take the first whitespace-delimited token.
+    // Diff header paths may carry a trailing TAB + timestamp (git uses a tab as the separator,
+    // never a space). Split on tab only so paths that legitimately contain spaces survive intact.
+    // (Any trailing CR is already trimmed by the caller.)
     private static string FirstToken(string s)
     {
-        var idx = s.IndexOfAny(new[] { '\t', ' ' });
+        var idx = s.IndexOf('\t');
         return idx >= 0 ? s[..idx] : s;
     }
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using Andy.Engine.SweBench.Grading;
 using Andy.Engine.SweBench.Grading.LogParsers;
 using Andy.Engine.SweBench.Model;
@@ -151,5 +152,65 @@ public class GradingUnitTests
         var targets = DiffUtil.GetDiffTargetFiles(testPatch);
 
         Assert.Equal(new[] { "astropy/units/tests/test_quantity_annotations.py" }, targets);
+    }
+
+    [Fact]
+    public void ModelPatchDecode_Is_Heredoc_Sentinel_Injection_Proof()
+    {
+        // A model-controlled patch whose CONTENT contains a line exactly equal to the heredoc
+        // sentinel would, if embedded raw, terminate the heredoc early and silently truncate the
+        // patch. base64-encoding makes the heredoc body pure base64, so the sentinel can never
+        // appear in it; the decoded bytes must still be the original patch verbatim.
+        var malicious =
+            "diff --git a/x.py b/x.py\n" +
+            "--- a/x.py\n+++ b/x.py\n@@\n+ok\n" +
+            EvalConstants.ModelPatchHeredoc + "\n" +   // the sentinel, embedded inside the patch
+            "+more\n";
+
+        var sb = new StringBuilder();
+        TestSpecBuilder.AppendModelPatchDecode(sb, malicious);
+        var script = sb.ToString();
+
+        // Exactly ONE line equals the sentinel verbatim: the heredoc terminator. The opening line
+        // is the full "base64 -d > ... <<'SENTINEL'" command (not a bare sentinel), and the patch
+        // content — which itself contains the sentinel string — is now inside the base64 body and
+        // therefore never appears as a standalone line. So the heredoc cannot be terminated early.
+        var lines = script.Split('\n');
+        var sentinelLines = lines.Count(l => l == EvalConstants.ModelPatchHeredoc);
+        Assert.Equal(1, sentinelLines);
+
+        // Round-trip: extract the base64 body and confirm it decodes back to the exact patch.
+        var open = Array.IndexOf(lines, $"base64 -d > /tmp/model_patch.diff <<'{EvalConstants.ModelPatchHeredoc}'");
+        Assert.True(open >= 0, "base64 decode line should be present");
+        var body = new StringBuilder();
+        for (var i = open + 1; lines[i] != EvalConstants.ModelPatchHeredoc; i++)
+            body.Append(lines[i]);
+        var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(body.ToString()));
+        Assert.Equal(malicious, decoded);
+    }
+
+    [Fact]
+    public void DiffUtil_FileHeaders_Preserve_Paths_With_Spaces()
+    {
+        // Git uses a TAB (not a space) to separate an optional timestamp from the diff path, so a
+        // path that legitimately contains spaces must survive intact, and a trailing tab+timestamp
+        // must be trimmed.
+        const string patch =
+            "--- a/dir with spaces/mod.py\t2024-01-01 00:00:00\n" +
+            "+++ b/dir with spaces/mod.py\t2024-01-01 00:00:00\n" +
+            "@@\n+x\n" +
+            "--- /dev/null\n" +
+            "+++ b/dir with spaces/new file.py\n" +
+            "@@\n+y\n";
+
+        Assert.Equal(new[] { "dir with spaces/mod.py" }, DiffUtil.GetModifiedFiles(patch));
+        Assert.Equal(new[] { "dir with spaces/new file.py" }, DiffUtil.GetNewFiles(patch));
+    }
+
+    [Fact]
+    public void Parsers_Return_Empty_Map_On_Empty_Input()
+    {
+        Assert.Empty(new DjangoLogParser().Parse(string.Empty));
+        Assert.Empty(new PytestLogParser().Parse(string.Empty));
     }
 }

@@ -91,10 +91,12 @@ public sealed class TestSpecBuilder
         sb.Append($"cd {EvalConstants.RepoDir}\n");
 
         // ---- Apply the model patch (fallback chain over a written patch file). ----
-        sb.Append($"cat > /tmp/model_patch.diff <<'{EvalConstants.ModelPatchHeredoc}'\n");
-        sb.Append(modelPatch);
-        if (!modelPatch.EndsWith('\n')) sb.Append('\n');
-        sb.Append($"{EvalConstants.ModelPatchHeredoc}\n");
+        // The model patch is model-controlled, so it must NOT be embedded raw in a heredoc: a
+        // patch whose content contains a line exactly equal to the heredoc sentinel would
+        // terminate the heredoc early, silently truncating the patch and producing a spurious
+        // "Patch Apply Failed". Base64-encode it instead — the heredoc body is then pure base64
+        // (A-Za-z0-9+/= plus newlines) and can never collide with the sentinel.
+        AppendModelPatchDecode(sb, modelPatch);
 
         sb.Append("__APPLIED=0\n");
         foreach (var cmd in EvalConstants.GitApplyCmds)
@@ -132,6 +134,25 @@ public sealed class TestSpecBuilder
         AppendResetCommands(sb, instance.BaseCommit, modified, newFiles);
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Emits a base64-encoded heredoc + decode for the model patch. The heredoc body is pure
+    /// base64 so it can never contain the sentinel line, making the embedding injection-proof
+    /// for arbitrary model-controlled patch content (including patches that themselves contain
+    /// heredoc delimiters, NULs, or odd whitespace).
+    /// </summary>
+    internal static void AppendModelPatchDecode(StringBuilder sb, string modelPatch)
+    {
+        // Encode the raw patch bytes (UTF-8). An empty patch yields an empty file, which the
+        // git-apply fallback chain will simply fail to apply (handled upstream as empty patch).
+        var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(modelPatch));
+
+        sb.Append($"base64 -d > /tmp/model_patch.diff <<'{EvalConstants.ModelPatchHeredoc}'\n");
+        // Wrap to fixed-width lines so very large patches don't produce a single multi-MB line.
+        for (var i = 0; i < b64.Length; i += 76)
+            sb.Append(b64, i, Math.Min(76, b64.Length - i)).Append('\n');
+        sb.Append($"{EvalConstants.ModelPatchHeredoc}\n");
     }
 
     private static void AppendResetCommands(
