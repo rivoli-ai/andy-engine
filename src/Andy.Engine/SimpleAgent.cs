@@ -23,6 +23,7 @@ public class SimpleAgent : IDisposable
     private readonly string _systemPrompt;
     private readonly int _maxTurns;
     private readonly int _maxOutputTokens;
+    private readonly int _maxToolResultChars;
     private readonly string _workingDirectory;
     private IConversationManager _conversationManager;
 
@@ -35,7 +36,8 @@ public class SimpleAgent : IDisposable
         string? workingDirectory = null,
         ILogger<SimpleAgent>? logger = null,
         IConversationManager? conversationManager = null,
-        int maxOutputTokens = 4096)
+        int maxOutputTokens = 4096,
+        int maxToolResultChars = 16000)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -43,6 +45,7 @@ public class SimpleAgent : IDisposable
         _systemPrompt = systemPrompt ?? throw new ArgumentNullException(nameof(systemPrompt));
         _maxTurns = maxTurns;
         _maxOutputTokens = maxOutputTokens;
+        _maxToolResultChars = maxToolResultChars;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _conversationManager = conversationManager ?? new DefaultConversationManager();
@@ -194,6 +197,15 @@ public class SimpleAgent : IDisposable
                                       success = false,
                                       error = toolResult.ErrorMessage
                                   });
+
+                            // Progressive disclosure: a large successful result (e.g. a full file
+                            // read or directory listing) serialized whole would blow up context and
+                            // cost. Cap it, keeping a head slice plus guidance for narrowing the
+                            // request. Error results are already small and are never truncated.
+                            if (toolResult.IsSuccessful)
+                            {
+                                resultContent = TruncateToolResult(resultContent, _maxToolResultChars);
+                            }
 
                             toolResults.Add(new Message
                             {
@@ -498,6 +510,33 @@ public class SimpleAgent : IDisposable
     /// (rather than the model choosing to stop). Providers report this as "length" (OpenAI/
     /// OpenRouter) or "max_tokens" (Anthropic).
     /// </summary>
+    /// <summary>
+    /// Caps a successful tool-result JSON payload at <paramref name="maxChars"/> characters.
+    /// When under the cap (or the cap is disabled with a non-positive value), the original
+    /// payload is returned unchanged. When over the cap, returns a new, valid JSON object that
+    /// keeps a head slice of the original under <c>"result"</c>, flags it as truncated, reports
+    /// the original/shown sizes, and tells the model how to retrieve the rest.
+    /// </summary>
+    internal static string TruncateToolResult(string resultContent, int maxChars)
+    {
+        if (maxChars <= 0 || resultContent.Length <= maxChars)
+            return resultContent;
+
+        var head = resultContent[..maxChars];
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            truncated = true,
+            total_chars = resultContent.Length,
+            shown_chars = head.Length,
+            result = head,
+            guidance = $"Result truncated (showed {head.Length} of {resultContent.Length} chars). "
+                     + "Narrow the request: read a specific line range, grep/search for the relevant "
+                     + "part, or filter the listing to get only what you need."
+        });
+    }
+
     internal static bool IsTruncatedByOutputLimit(string? finishReason) =>
         finishReason is not null &&
         (finishReason.Equals("length", StringComparison.OrdinalIgnoreCase) ||
