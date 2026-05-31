@@ -1,4 +1,3 @@
-using Andy.Engine.Contracts;
 using Andy.Model.Conversation;
 using Andy.Model.Llm;
 using Andy.Model.Model;
@@ -656,4 +655,4 @@ public record SimpleAgentResult(
     string StopReason
 );
 
-// Note: ToolCalledEventArgs is defined in Agent.cs and shared across both Agent and SimpleAgent
+// Note: ToolCalledEventArgs is defined in ToolCalledEventArgs.cs and shared across scenario runners and SimpleAgent
