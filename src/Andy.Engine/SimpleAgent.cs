@@ -106,6 +106,11 @@ public class SimpleAgent : IDisposable
         // The final assistant message is NOT included here — it goes in Turn.AssistantMessage
         var allInterleavedMessages = new List<Message>();
         Message? finalAssistantMessage = null;
+        // True when the most recent assistant message was appended to allInterleavedMessages
+        // (a tool-call turn or an output-limit truncation turn) rather than being a genuine
+        // final answer. Used at max-turns to avoid recording that already-interleaved message
+        // a second time as Turn.AssistantMessage.
+        var lastAssistantWasInterleaved = false;
 
         var turnCount = 0;
         var startTime = DateTime.UtcNow;
@@ -152,6 +157,7 @@ public class SimpleAgent : IDisposable
                 // Add assistant message to in-flight messages
                 inFlightMessages.Add(response.AssistantMessage);
                 finalAssistantMessage = response.AssistantMessage;
+                lastAssistantWasInterleaved = false;
 
                 // Check if we have tool calls
                 if (response.HasToolCalls)
@@ -160,6 +166,7 @@ public class SimpleAgent : IDisposable
 
                     // Store the intermediate assistant message (with ToolCalls) for proper context reconstruction
                     allInterleavedMessages.Add(response.AssistantMessage);
+                    lastAssistantWasInterleaved = true;
 
                     // Execute all tool calls CONCURRENTLY to cut latency, then assemble the
                     // results in the ORIGINAL tool-call order. The model maps tool results to
@@ -204,13 +211,25 @@ public class SimpleAgent : IDisposable
                     _logger?.LogWarning(
                         "LLM response truncated by output-token limit (FinishReason: {FinishReason}) on turn {TurnCount}; continuing.",
                         response.FinishReason, turnCount);
-                    inFlightMessages.Add(new Message
+
+                    // Record the partial assistant message and the nudge in the interleaved log
+                    // so the persisted Turn (and any later replay/compaction of it) faithfully
+                    // reflects what was actually sent to the model. Without this, both messages
+                    // would live only in inFlightMessages and be dropped from conversation
+                    // history. The interleaved log is therefore the single source of truth for
+                    // everything between the user message and the final answer.
+                    allInterleavedMessages.Add(response.AssistantMessage);
+                    lastAssistantWasInterleaved = true;
+
+                    var nudge = new Message
                     {
                         Role = Role.User,
                         Content = "Your previous response was cut off by the output limit before you "
                                 + "produced a tool call or a complete answer. Continue from where you "
                                 + "left off and make the necessary tool calls to apply your change.",
-                    });
+                    };
+                    inFlightMessages.Add(nudge);
+                    allInterleavedMessages.Add(nudge);
                     continue;
                 }
 
@@ -239,11 +258,20 @@ public class SimpleAgent : IDisposable
                 );
             }
 
-            // Exhausted max turns — still record the turn so conversation state is preserved
+            // Exhausted max turns — still record the turn so conversation state is preserved.
+            //
+            // Every iteration of the loop ends in either `continue` (tool calls or output-limit
+            // truncation, both of which append the assistant message to allInterleavedMessages)
+            // or `return` (a genuine final answer, which exits this method). So when the loop
+            // falls through here, the last assistant message is ALREADY inside
+            // allInterleavedMessages. Storing it again as Turn.AssistantMessage would duplicate
+            // it in the reconstructed history (BuildContextFromConversation emits ToolMessages
+            // then AssistantMessage), producing a dangling/duplicated assistant message. There
+            // is no genuine final answer at max-turns, so leave it null in that case.
             _conversationManager.AddTurn(new Turn
             {
                 UserOrSystemMessage = userMsg,
-                AssistantMessage = finalAssistantMessage,
+                AssistantMessage = lastAssistantWasInterleaved ? null : finalAssistantMessage,
                 ToolMessages = allInterleavedMessages
             });
 
@@ -378,16 +406,16 @@ public class SimpleAgent : IDisposable
             // IMPORTANT: Always wrap results in a consistent format so LLM can interpret success/failure
             var resultContent = toolResult.IsSuccessful
                 ? JsonSerializer.Serialize(new
-                  {
-                      success = true,
-                      result = toolResult.Data,
-                      message = toolResult.Message
-                  })
+                {
+                    success = true,
+                    result = toolResult.Data,
+                    message = toolResult.Message
+                })
                 : JsonSerializer.Serialize(new
-                  {
-                      success = false,
-                      error = toolResult.ErrorMessage
-                  });
+                {
+                    success = false,
+                    error = toolResult.ErrorMessage
+                });
 
             // Progressive disclosure: a large successful result (e.g. a full file read or
             // directory listing) serialized whole would blow up context and cost. Cap it,
