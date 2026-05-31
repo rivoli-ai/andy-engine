@@ -54,6 +54,14 @@ public sealed class RunContext
     /// </summary>
     public bool GoldSurvey { get; init; } = false;
 
+    /// <summary>
+    /// Wall-clock cap per agent instance (seconds). If the agent exceeds it, the instance is
+    /// cancelled, recorded as a timed-out (empty) prediction, and the run continues. Bounds
+    /// runaway instances (a hung LLM call or a model that never stops). 0 disables. Relies on
+    /// SimpleAgent propagating cancellation; the longest healthy instance observed was ~16 min.
+    /// </summary>
+    public int AgentTimeoutSeconds { get; init; } = 1800;
+
     // ---- Grading ----
     public int DockerTimeoutSeconds { get; init; } = 1800;
 

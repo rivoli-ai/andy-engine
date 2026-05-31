@@ -32,6 +32,7 @@ public static class SweBenchCliOptions
           --provider-base <url>       Default: https://openrouter.ai/api/v1
           --max-turns <n>             Default: 40
           --max-output-tokens <n>     Per-response output-token cap (default: 8192; raise for reasoning models)
+          --agent-timeout-seconds <n> Per-instance wall-clock cap; 0 disables (default: 1800)
 
         Rate-limit:
           --max-retries <n>           Default: 6
@@ -94,6 +95,7 @@ public static class SweBenchCliOptions
             FailFastThreshold = GetDouble(map, "fail-fast-threshold") ?? 0.6,
             MaxConsecutiveErrors = GetInt(map, "max-consecutive-errors") ?? 3,
             DockerTimeoutSeconds = GetInt(map, "docker-timeout-seconds") ?? 1800,
+            AgentTimeoutSeconds = GetInt(map, "agent-timeout-seconds") ?? 1800,
             WorkDir = Get(map, "work-dir") ?? Path.Combine(Directory.GetCurrentDirectory(), "swebench-runs"),
             RunId = Get(map, "run-id") ?? defaultRunId,
             Reporters = reporters,

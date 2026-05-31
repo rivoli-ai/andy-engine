@@ -40,9 +40,10 @@ public sealed class SweInstanceRunner
         {
             workspace = await _workspaces.PrepareAsync(instance, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Clone/checkout failure is a setup problem.
+            // Clone/checkout failure is a setup problem. (A cancellation/timeout propagates so the
+            // orchestrator can record a clean timeout instead of a setup error.)
             return Hard(instance, string.Empty, $"workspace prepare failed: {ex.Message}");
         }
 
@@ -74,10 +75,12 @@ public sealed class SweInstanceRunner
                 Duration = result.Duration,
             };
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             return Hard(instance, string.Empty, $"agent run threw: {ex.Message}");
         }
+        // OperationCanceledException propagates (a per-instance timeout or a real cancellation);
+        // the orchestrator decides whether to skip the instance or stop the run.
         finally
         {
             if (!_ctx.KeepWorkspaces)

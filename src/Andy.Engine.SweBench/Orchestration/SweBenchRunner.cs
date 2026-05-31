@@ -134,7 +134,35 @@ public sealed class SweBenchRunner
             }
 
             _log.WriteLine($"  [agent] {instance.InstanceId} ...");
-            var result = await runner.RunAsync(instance, cancellationToken);
+
+            // Per-instance wall-clock cap: cancel a runaway agent and move on, without aborting
+            // the whole run. The outer token still cancels everything.
+            using var instanceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_ctx.AgentTimeoutSeconds > 0)
+                instanceCts.CancelAfter(TimeSpan.FromSeconds(_ctx.AgentTimeoutSeconds));
+
+            AgentRunResult result;
+            try
+            {
+                result = await runner.RunAsync(instance, instanceCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Timed out (not an outer cancellation): record an empty prediction and continue.
+                _log.WriteLine($"           -> TIMED OUT after {_ctx.AgentTimeoutSeconds}s; skipping instance");
+                var timedOut = new SwePrediction
+                {
+                    InstanceId = instance.InstanceId,
+                    ModelNameOrPath = _ctx.Model,
+                    ModelPatch = string.Empty,
+                };
+                predictions.Add(timedOut);
+                checkpoint.Append(timedOut);
+                if (gate.Observe(InstanceOutcome.Soft, instance.InstanceId))
+                    break;
+                continue;
+            }
+
             predictions.Add(result.Prediction);
             checkpoint.Append(result.Prediction);
 

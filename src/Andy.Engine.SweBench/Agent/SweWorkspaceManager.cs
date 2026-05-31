@@ -162,7 +162,16 @@ public sealed class SweWorkspaceManager
         p.Start();
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
-        await p.WaitForExitAsync(ct);
+        try
+        {
+            await p.WaitForExitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // Don't leave an orphaned git process (e.g. a long clone) running after a timeout.
+            try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            throw;
+        }
         return (so.ToString(), se.ToString(), p.ExitCode);
     }
 
