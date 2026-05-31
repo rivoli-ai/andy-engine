@@ -111,8 +111,23 @@ public sealed class SweWorkspaceManager
             if (bytes.Length < 3 || bytes[0] != Utf8Bom[0] || bytes[1] != Utf8Bom[1] || bytes[2] != Utf8Bom[2])
                 continue;
 
+            // Guard against the (rare) case of a genuinely binary file whose first three bytes
+            // happen to be EF BB BF: a NUL byte in the prefix means it's not BOM-prefixed text,
+            // so leave it untouched rather than corrupting it.
+            if (HasNulByte(bytes, 3, 512))
+                continue;
+
             await File.WriteAllBytesAsync(full, bytes[3..], cancellationToken);
         }
+    }
+
+    /// <summary>True if any of the first <paramref name="count"/> bytes after <paramref name="start"/> is NUL.</summary>
+    private static bool HasNulByte(byte[] bytes, int start, int count)
+    {
+        var end = Math.Min(bytes.Length, start + count);
+        for (var i = start; i < end; i++)
+            if (bytes[i] == 0) return true;
+        return false;
     }
 
     /// <summary>Removes a workspace directory (best effort).</summary>
