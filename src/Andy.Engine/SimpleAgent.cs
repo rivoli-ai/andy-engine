@@ -145,101 +145,32 @@ public class SimpleAgent : IDisposable
                     // Store the intermediate assistant message (with ToolCalls) for proper context reconstruction
                     allInterleavedMessages.Add(response.AssistantMessage);
 
-                    // Execute all tool calls and collect results
-                    var toolResults = new List<Message>();
-                    foreach (var toolCall in response.ToolCalls)
-                    {
-                        _logger?.LogDebug("Executing tool: {ToolName}", toolCall.Name);
+                    // Execute all tool calls CONCURRENTLY to cut latency, then assemble the
+                    // results in the ORIGINAL tool-call order. The model maps tool results to
+                    // tool calls by order/CallId, so the order of `toolResults` must match
+                    // `response.ToolCalls` regardless of which call finishes first.
+                    //
+                    // Concurrency approach: one independent Task per tool call via Task.WhenAll,
+                    // each with its OWN ToolExecutionContext. There is no cross-call shared
+                    // mutable state introduced here (each lambda only touches its own captured
+                    // toolCall and builds its own Message), so file-mutating tools are no riskier
+                    // than the executor itself already allows for a single multi-tool turn — the
+                    // model chose to issue these calls together. Per-call exceptions are captured
+                    // as that call's error result (isolation); OperationCanceledException is NOT
+                    // captured — it is rethrown so it cancels the whole run.
+                    var toolTasks = response.ToolCalls
+                        .Select(toolCall => ExecuteToolCallAsync(toolCall, cancellationToken))
+                        .ToList();
 
-                        // Raise event
-                        var traceId = Guid.NewGuid();
-                        ToolCalled?.Invoke(this, new ToolCalledEventArgs(
-                            traceId,
-                            toolCall.Name,
-                            "" // Result will be populated after execution
-                        ));
+                    // Task.WhenAll surfaces the first faulting task's exception; since each task
+                    // only rethrows OperationCanceledException (all other failures become error
+                    // results inside the task), the only exception that can propagate here is a
+                    // cancellation — which we want to propagate.
+                    var toolResults = (await Task.WhenAll(toolTasks)).ToList();
 
-                        try
-                        {
-                            // Parse tool arguments
-                            var args = ParseToolArguments(toolCall.ArgumentsJson);
-
-                            // Execute tool
-                            var toolResult = await _toolExecutor.ExecuteAsync(
-                                toolCall.Name,
-                                args,
-                                new ToolExecutionContext
-                                {
-                                    WorkingDirectory = _workingDirectory,
-                                    Environment = new Dictionary<string, string>(),
-                                    CancellationToken = cancellationToken,
-                                    // The default 100MB cap is measured process-wide and is
-                                    // exceeded by the .NET runtime alone, producing spurious
-                                    // "resource limit exceeded" warnings on ordinary file ops.
-                                    ResourceLimits = new ToolResourceLimits { MaxMemoryBytes = 2L * 1024 * 1024 * 1024 }
-                                }
-                            );
-
-                            // Create tool result message with explicit success indicator
-                            // IMPORTANT: Always wrap results in a consistent format so LLM can interpret success/failure
-                            var resultContent = toolResult.IsSuccessful
-                                ? JsonSerializer.Serialize(new
-                                  {
-                                      success = true,
-                                      result = toolResult.Data,
-                                      message = toolResult.Message
-                                  })
-                                : JsonSerializer.Serialize(new
-                                  {
-                                      success = false,
-                                      error = toolResult.ErrorMessage
-                                  });
-
-                            toolResults.Add(new Message
-                            {
-                                Role = Role.Tool,
-                                Content = resultContent,
-                                ToolResults = new List<Andy.Model.Model.ToolResult>
-                                {
-                                    new Andy.Model.Model.ToolResult
-                                    {
-                                        CallId = toolCall.Id,
-                                        Name = toolCall.Name,
-                                        ResultJson = resultContent,
-                                        IsError = !toolResult.IsSuccessful
-                                    }
-                                }
-                            });
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            // Cancellation is not a tool failure; propagate so callers can
-                            // distinguish "cancelled" from "the tool errored".
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger?.LogError(ex, "Error executing tool {ToolName}", toolCall.Name);
-                            var errorContent = JsonSerializer.Serialize(new { success = false, error = ex.Message });
-                            toolResults.Add(new Message
-                            {
-                                Role = Role.Tool,
-                                Content = errorContent,
-                                ToolResults = new List<Andy.Model.Model.ToolResult>
-                                {
-                                    new Andy.Model.Model.ToolResult
-                                    {
-                                        CallId = toolCall.Id,
-                                        Name = toolCall.Name,
-                                        ResultJson = errorContent,
-                                        IsError = true
-                                    }
-                                }
-                            });
-                        }
-                    }
-
-                    // Add tool results to in-flight messages and track them for the Turn
+                    // Add tool results to in-flight messages and track them for the Turn.
+                    // toolResults is already in original tool-call order (WhenAll preserves the
+                    // input task order in its result array).
                     inFlightMessages.AddRange(toolResults);
                     allInterleavedMessages.AddRange(toolResults);
 
@@ -381,6 +312,109 @@ public class SimpleAgent : IDisposable
                 Duration: DateTime.UtcNow - startTime,
                 StopReason: $"error: {errorMessage}"
             );
+        }
+    }
+
+    /// <summary>
+    /// Executes a single tool call (parse args → execute → shape the result Message) with the
+    /// same try/catch semantics used for serial execution, so it is safe to run concurrently
+    /// with sibling calls from the same turn. Each invocation builds its OWN
+    /// <see cref="ToolExecutionContext"/> and never shares mutable state with other calls.
+    ///
+    /// A failing call is captured as THAT call's error result (so one failure does not fail the
+    /// others), but <see cref="OperationCanceledException"/> is rethrown so a cancellation
+    /// cancels the whole run rather than being masked as a tool error.
+    /// </summary>
+    private async Task<Message> ExecuteToolCallAsync(Andy.Model.Model.ToolCall toolCall, CancellationToken cancellationToken)
+    {
+        _logger?.LogDebug("Executing tool: {ToolName}", toolCall.Name);
+
+        // Raise event (one per call, as before).
+        var traceId = Guid.NewGuid();
+        ToolCalled?.Invoke(this, new ToolCalledEventArgs(
+            traceId,
+            toolCall.Name,
+            "" // Result will be populated after execution
+        ));
+
+        try
+        {
+            // Parse tool arguments
+            var args = ParseToolArguments(toolCall.ArgumentsJson);
+
+            // Execute tool
+            var toolResult = await _toolExecutor.ExecuteAsync(
+                toolCall.Name,
+                args,
+                new ToolExecutionContext
+                {
+                    WorkingDirectory = _workingDirectory,
+                    Environment = new Dictionary<string, string>(),
+                    CancellationToken = cancellationToken,
+                    // The default 100MB cap is measured process-wide and is
+                    // exceeded by the .NET runtime alone, producing spurious
+                    // "resource limit exceeded" warnings on ordinary file ops.
+                    ResourceLimits = new ToolResourceLimits { MaxMemoryBytes = 2L * 1024 * 1024 * 1024 }
+                }
+            );
+
+            // Create tool result message with explicit success indicator
+            // IMPORTANT: Always wrap results in a consistent format so LLM can interpret success/failure
+            var resultContent = toolResult.IsSuccessful
+                ? JsonSerializer.Serialize(new
+                  {
+                      success = true,
+                      result = toolResult.Data,
+                      message = toolResult.Message
+                  })
+                : JsonSerializer.Serialize(new
+                  {
+                      success = false,
+                      error = toolResult.ErrorMessage
+                  });
+
+            return new Message
+            {
+                Role = Role.Tool,
+                Content = resultContent,
+                ToolResults = new List<Andy.Model.Model.ToolResult>
+                {
+                    new Andy.Model.Model.ToolResult
+                    {
+                        CallId = toolCall.Id,
+                        Name = toolCall.Name,
+                        ResultJson = resultContent,
+                        IsError = !toolResult.IsSuccessful
+                    }
+                }
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is not a tool failure; propagate so callers can
+            // distinguish "cancelled" from "the tool errored". Propagating from this task
+            // makes Task.WhenAll surface the cancellation, which cancels the whole run.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error executing tool {ToolName}", toolCall.Name);
+            var errorContent = JsonSerializer.Serialize(new { success = false, error = ex.Message });
+            return new Message
+            {
+                Role = Role.Tool,
+                Content = errorContent,
+                ToolResults = new List<Andy.Model.Model.ToolResult>
+                {
+                    new Andy.Model.Model.ToolResult
+                    {
+                        CallId = toolCall.Id,
+                        Name = toolCall.Name,
+                        ResultJson = errorContent,
+                        IsError = true
+                    }
+                }
+            };
         }
     }
 
