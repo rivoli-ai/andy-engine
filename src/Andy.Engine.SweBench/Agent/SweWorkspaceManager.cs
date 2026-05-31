@@ -23,6 +23,9 @@ public sealed class SweWorkspaceManager
     {
         "**/__pycache__/**", "**/*.pyc", "**/*.pyo", "**/*.egg-info/**",
         "**/.pytest_cache/**", "**/.tox/**", "**/*.orig", "**/*.rej",
+        // Safety copies some models make before editing (e.g. "base.py.backup.20260530212325").
+        // These whole-file duplicates are not a fix and must not pollute the model patch.
+        "**/*.bak", "**/*.backup", "**/*.backup.*",
     };
 
     public SweWorkspaceManager(string workDir, TextWriter? log = null)
