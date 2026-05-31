@@ -1,3 +1,4 @@
+using Andy.Context.Context;
 using Andy.Engine.Contracts;
 using Andy.Model.Conversation;
 using Andy.Model.Llm;
@@ -7,6 +8,10 @@ using Andy.Tools.Core;
 using Microsoft.Extensions.Logging;
 using System.Text;
 using System.Text.Json;
+using CtxMessage = Andy.Context.Model.Message;
+using CtxRole = Andy.Context.Model.Role;
+using CtxToolCall = Andy.Context.Model.ToolCall;
+using CtxToolResult = Andy.Context.Model.ToolResult;
 
 namespace Andy.Engine;
 
@@ -24,6 +29,8 @@ public class SimpleAgent : IDisposable
     private readonly int _maxTurns;
     private readonly int _maxOutputTokens;
     private readonly int _maxToolResultChars;
+    private readonly int _maxContextTokens;
+    private readonly IContextCompressor _contextCompressor;
     private readonly string _workingDirectory;
     private IConversationManager _conversationManager;
 
@@ -37,7 +44,9 @@ public class SimpleAgent : IDisposable
         ILogger<SimpleAgent>? logger = null,
         IConversationManager? conversationManager = null,
         int maxOutputTokens = 4096,
-        int maxToolResultChars = 16000)
+        int maxToolResultChars = 16000,
+        int maxContextTokens = 120_000,
+        IContextCompressor? contextCompressor = null)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -46,6 +55,8 @@ public class SimpleAgent : IDisposable
         _maxTurns = maxTurns;
         _maxOutputTokens = maxOutputTokens;
         _maxToolResultChars = maxToolResultChars;
+        _maxContextTokens = maxContextTokens > 0 ? maxContextTokens : 120_000;
+        _contextCompressor = contextCompressor ?? new SmartCompressor();
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _conversationManager = conversationManager ?? new DefaultConversationManager();
@@ -78,8 +89,10 @@ public class SimpleAgent : IDisposable
 
         _logger?.LogInformation("Processing user message: {Message}", userMessage);
 
-        // Prior context from conversation turns (properly interleaved)
-        var contextMessages = BuildContextFromConversation();
+        // Prior context from conversation turns (properly interleaved), compressed to fit the
+        // per-request token budget. The full conversation log is retained unmodified; only this
+        // per-request VIEW is compressed.
+        var contextMessages = BuildRequestContext();
 
         var userMsg = new Message
         {
@@ -435,6 +448,90 @@ public class SimpleAgent : IDisposable
         }
         return messages;
     }
+
+    /// <summary>
+    /// Builds the token-budgeted, compressed per-request view of the conversation. The full
+    /// conversation log in <see cref="_conversationManager"/> is never mutated; this returns a
+    /// fresh list fitted to <see cref="_maxContextTokens"/> via the configured
+    /// <see cref="IContextCompressor"/>. Small histories pass through unchanged; oversized ones are
+    /// shrunk (tool-call/result pairs and system/tool messages preserved). Falls back to the raw
+    /// list if compression throws so a request is never lost to a context-library error.
+    /// </summary>
+    internal List<Message> BuildRequestContext()
+    {
+        var raw = BuildContextFromConversation();
+        if (raw.Count == 0)
+            return raw;
+
+        try
+        {
+            var options = new ContextBuildOptions
+            {
+                TokenBudget = _maxContextTokens,
+                // Bound how many recent messages survive verbatim; large enough not to drop a
+                // normal interaction, while still letting the compressor shorten older content.
+                MaxRecentMessages = Math.Max(20, raw.Count),
+                IncludeToolMessages = true,
+                IncludeSystemMessages = true,
+                PreserveToolCallPairs = true,
+                CompressionStrategy = Andy.Context.Context.CompressionStrategy.Smart,
+            };
+
+            var compressed = _contextCompressor.Compress(raw.Select(ToCtxMessage).ToList(), options);
+            return compressed.Select(FromCtxMessage).ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Context compression failed; falling back to uncompressed request view.");
+            return raw;
+        }
+    }
+
+    private static CtxMessage ToCtxMessage(Message m) => new CtxMessage
+    {
+        Role = (CtxRole)(int)m.Role,
+        Content = m.Content ?? string.Empty,
+        ToolCalls = m.ToolCalls?.Select(tc => new CtxToolCall
+        {
+            Id = tc.Id,
+            Name = tc.Name,
+            ArgumentsJson = tc.ArgumentsJson,
+        }).ToList() ?? new List<CtxToolCall>(),
+        ToolResults = m.ToolResults?.Select(tr => new CtxToolResult
+        {
+            CallId = tr.CallId,
+            Name = tr.Name,
+            IsError = tr.IsError,
+            ResultJson = tr.ResultJson,
+        }).ToList() ?? new List<CtxToolResult>(),
+        Id = m.Id,
+        Timestamp = m.Timestamp,
+    };
+
+    private static Message FromCtxMessage(CtxMessage m) => new Message
+    {
+        Role = (Role)(int)m.Role,
+        Content = m.Content ?? string.Empty,
+        Timestamp = m.Timestamp,
+        Id = string.IsNullOrEmpty(m.Id) ? Guid.NewGuid().ToString() : m.Id,
+        ToolCalls = m.ToolCalls is { Count: > 0 }
+            ? m.ToolCalls.Select(tc => new Andy.Model.Model.ToolCall
+            {
+                Id = tc.Id,
+                Name = tc.Name,
+                ArgumentsJson = tc.ArgumentsJson,
+            }).ToList()
+            : null,
+        ToolResults = m.ToolResults is { Count: > 0 }
+            ? m.ToolResults.Select(tr => new Andy.Model.Model.ToolResult
+            {
+                CallId = tr.CallId,
+                Name = tr.Name,
+                IsError = tr.IsError,
+                ResultJson = tr.ResultJson,
+            }).ToList()
+            : null,
+    };
 
     private IReadOnlyList<ToolDeclaration> BuildToolDeclarations()
     {

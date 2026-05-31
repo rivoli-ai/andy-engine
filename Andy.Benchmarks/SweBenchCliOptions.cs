@@ -32,6 +32,7 @@ public static class SweBenchCliOptions
           --provider-base <url>       Default: https://openrouter.ai/api/v1
           --max-turns <n>             Default: 40
           --max-output-tokens <n>     Per-response output-token cap (default: 8192; raise for reasoning models)
+          --max-context-tokens <n>    Per-request input-token budget for the compressed context view (default: 200000)
           --agent-timeout-seconds <n> Per-instance wall-clock cap; 0 disables (default: 1800)
 
         Rate-limit:
@@ -89,6 +90,7 @@ public static class SweBenchCliOptions
             ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
             MaxTurns = GetInt(map, "max-turns") ?? 40,
             MaxOutputTokens = GetInt(map, "max-output-tokens") ?? 8192,
+            MaxContextTokens = GetInt(map, "max-context-tokens") ?? 200000,
             MaxRetries = GetInt(map, "max-retries") ?? 6,
             MaxDelaySeconds = GetInt(map, "max-delay-seconds") ?? 60,
             FailFastWindow = GetInt(map, "fail-fast-window") ?? 5,

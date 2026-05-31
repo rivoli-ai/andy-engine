@@ -38,6 +38,13 @@ public sealed class RunContext
     /// </summary>
     public int MaxOutputTokens { get; init; } = 8192;
 
+    /// <summary>
+    /// Per-request input-token budget. The full conversation log is retained, but the per-request
+    /// VIEW sent to the model is compressed (Andy.Context SmartCompressor) to fit this budget so
+    /// long agent runs do not overflow the model's context window or pay full price every turn.
+    /// </summary>
+    public int MaxContextTokens { get; init; } = 200_000;
+
     // ---- Rate-limit policy ----
     public int MaxRetries { get; init; } = 6;
     public int MaxDelaySeconds { get; init; } = 60;
