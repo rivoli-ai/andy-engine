@@ -1,5 +1,8 @@
+using System.Text.Json;
 using Andy.Benchmarks;
+using Andy.Engine.SweBench.Model;
 using Andy.Engine.SweBench.Orchestration;
+using Andy.Engine.SweBench.Reporting;
 
 internal static class Program
 {
@@ -9,6 +12,51 @@ internal static class Program
         {
             Console.WriteLine(SweBenchCliOptions.Usage);
             return args.Length == 0 ? 1 : 0;
+        }
+
+        // Render-only mode: turn an existing report.json into report.html. No dataset, Docker,
+        // or LLM — so a finished run can be presented without re-running anything.
+        var renderIdx = Array.IndexOf(args, "--render-report");
+        if (renderIdx >= 0)
+        {
+            if (renderIdx + 1 >= args.Length)
+            {
+                Console.Error.WriteLine("--render-report requires a path to a report.json");
+                return 64;
+            }
+            var reportPath = args[renderIdx + 1];
+            var outIdx = Array.IndexOf(args, "--out");
+            try
+            {
+                // A directory => consolidate the whole run from its on-disk artifacts (handles
+                // batched/--resume runs whose top-level report.json is only the last batch).
+                // A file => render that report.json directly.
+                SweRunReport report;
+                string defaultOutDir;
+                if (Directory.Exists(reportPath))
+                {
+                    report = ReportConsolidator.Consolidate(reportPath);
+                    defaultOutDir = reportPath;
+                }
+                else
+                {
+                    var json = await File.ReadAllTextAsync(reportPath);
+                    report = JsonSerializer.Deserialize<SweRunReport>(json)
+                        ?? throw new InvalidOperationException("report.json deserialized to null");
+                    defaultOutDir = Path.GetDirectoryName(Path.GetFullPath(reportPath)) ?? ".";
+                }
+                var outPath = outIdx >= 0 && outIdx + 1 < args.Length
+                    ? args[outIdx + 1]
+                    : Path.Combine(defaultOutDir, "report.html");
+                Console.WriteLine($"Wrote {HtmlReporter.Write(report, outPath)}  "
+                                + $"({report.ResolvedInstances}/{report.TotalInstances} resolved)");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Render failed: {ex.Message}");
+                return 1;
+            }
         }
 
         RunContext ctx;

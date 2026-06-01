@@ -282,6 +282,12 @@ public sealed class SweBenchRunner
 
         if (_ctx.Reporters.Contains("console", StringComparer.OrdinalIgnoreCase))
             _log.WriteLine(ConsoleReporter.Render(report));
+
+        if (_ctx.Reporters.Contains("html", StringComparer.OrdinalIgnoreCase))
+        {
+            var path = HtmlReporter.Write(report, Path.Combine(_ctx.RunDir, "report.html"));
+            _log.WriteLine($"Wrote {path}");
+        }
     }
 
     private void PrintSubset(IReadOnlyList<SweBenchInstance> subset)
