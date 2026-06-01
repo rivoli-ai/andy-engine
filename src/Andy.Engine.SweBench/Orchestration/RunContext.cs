@@ -29,21 +29,34 @@ public sealed class RunContext
     // (moonshotai/kimi-k2.6:free) is a stronger coding alternative via --model.
     public string Model { get; init; } = "openai/gpt-oss-20b:free";
     public string ProviderBaseUrl { get; init; } = "https://openrouter.ai/api/v1";
-    public int MaxTurns { get; init; } = 40;
+    // ---- Agent limits ----
+    // Defaults are tuned for LARGE-CONTEXT coding models (the norm for capable agents — mimo has a
+    // 1M window). A re-baseline showed that tight limits (200k context / 8k output / 40 turns)
+    // REGRESS such models: the compaction + output-truncation hide information and burn turns,
+    // producing empty patches. So defaults are generous; tighten with the flags below for
+    // token-constrained models. See src/Andy.Engine.SweBench/README.md.
+    public int MaxTurns { get; init; } = 50;
 
     /// <summary>
-    /// Per-response output-token cap sent to the model. Must be large enough to fit a reasoning
-    /// model's hidden reasoning plus a complete tool call; too low truncates turns (FinishReason
-    /// "length") and yields empty patches.
+    /// Per-response output-token cap sent to the model. Must fit a reasoning model's hidden
+    /// reasoning PLUS a complete tool call; too low truncates turns (FinishReason "length"),
+    /// wasting turns on "continue" round-trips and yielding empty patches.
     /// </summary>
-    public int MaxOutputTokens { get; init; } = 8192;
+    public int MaxOutputTokens { get; init; } = 16_384;
 
     /// <summary>
-    /// Per-request input-token budget. The full conversation log is retained, but the per-request
-    /// VIEW sent to the model is compressed (Andy.Context SmartCompressor) to fit this budget so
-    /// long agent runs do not overflow the model's context window or pay full price every turn.
+    /// Per-request input-token budget. The full conversation log is retained; only the per-request
+    /// VIEW is compressed (Andy.Context SmartCompressor) once it exceeds this. Default is high so
+    /// compaction does NOT kick in for large-context models (which need to see full files to edit
+    /// them); lower it for models with a small context window.
     /// </summary>
-    public int MaxContextTokens { get; init; } = 200_000;
+    public int MaxContextTokens { get; init; } = 1_000_000;
+
+    /// <summary>
+    /// Per-tool-result character cap before truncate-with-guidance. Generous by default so the
+    /// agent sees whole files; lower it to save tokens on token-constrained models.
+    /// </summary>
+    public int MaxToolResultChars { get; init; } = 100_000;
 
     // ---- Rate-limit policy ----
     public int MaxRetries { get; init; } = 6;

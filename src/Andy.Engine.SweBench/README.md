@@ -93,8 +93,12 @@ Resilience / safety knobs:
 - `--agent-timeout-seconds <n>` (default 1800): per-instance wall-clock cap. A runaway agent is
   cancelled and recorded as a timed-out (empty) prediction; the run continues. Relies on
   `SimpleAgent` propagating cancellation.
-- `--max-output-tokens <n>` (default 8192): raise for reasoning models (low caps truncate turns →
-  empty patches).
+- **Token limits default GENEROUS for large-context models** (the norm for capable coding agents).
+  A re-baseline showed tight limits REGRESS such models — compaction + output truncation hide
+  information and burn turns, producing empty patches. Defaults: `--max-turns 50`,
+  `--max-output-tokens 16384`, `--max-context-tokens 1000000`, `--max-tool-result-chars 100000`.
+  **Tighten these for token-constrained / small-context models** to save cost. (mimo-v2.5 went
+  from a regression under tight 200k/8k/40 limits back to baseline once the limits were relaxed.)
 - Malformed/empty LLM responses (JSON parse failures) and HTTP 429/5xx are retried with backoff
   (`RateLimitingLlmProvider`).
 - Run in batches with `--resume` for large sets; a single long process is more fragile.

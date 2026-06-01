@@ -112,7 +112,8 @@ public sealed class SweAgentFactory
             workingDirectory: workspaceDir,
             logger: provider.GetService<ILoggerFactory>()?.CreateLogger<SimpleAgent>(),
             maxOutputTokens: _ctx.MaxOutputTokens,
-            maxContextTokens: _ctx.MaxContextTokens);
+            maxContextTokens: _ctx.MaxContextTokens,
+            maxToolResultChars: _ctx.MaxToolResultChars);
 
         return new SweAgent(
             agent,

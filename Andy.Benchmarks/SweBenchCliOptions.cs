@@ -30,9 +30,10 @@ public static class SweBenchCliOptions
         Model / provider (agent stage):
           --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
           --provider-base <url>       Default: https://openrouter.ai/api/v1
-          --max-turns <n>             Default: 40
-          --max-output-tokens <n>     Per-response output-token cap (default: 8192; raise for reasoning models)
-          --max-context-tokens <n>    Per-request input-token budget for the compressed context view (default: 200000)
+          --max-turns <n>             Default: 50
+          --max-output-tokens <n>     Per-response output-token cap (default: 16384)
+          --max-context-tokens <n>    Compressed-context budget (default: 1000000; lower for small-context models)
+          --max-tool-result-chars <n> Per-tool-result char cap before truncate-with-guidance (default: 100000)
           --agent-timeout-seconds <n> Per-instance wall-clock cap; 0 disables (default: 1800)
 
         Rate-limit:
@@ -91,9 +92,10 @@ public static class SweBenchCliOptions
             PredictionsPath = Get(map, "predictions-path"),
             Model = Get(map, "model") ?? "openai/gpt-oss-20b:free",
             ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
-            MaxTurns = GetInt(map, "max-turns") ?? 40,
-            MaxOutputTokens = GetInt(map, "max-output-tokens") ?? 8192,
-            MaxContextTokens = GetInt(map, "max-context-tokens") ?? 200000,
+            MaxTurns = GetInt(map, "max-turns") ?? 50,
+            MaxOutputTokens = GetInt(map, "max-output-tokens") ?? 16_384,
+            MaxContextTokens = GetInt(map, "max-context-tokens") ?? 1_000_000,
+            MaxToolResultChars = GetInt(map, "max-tool-result-chars") ?? 100_000,
             MaxRetries = GetInt(map, "max-retries") ?? 6,
             MaxDelaySeconds = GetInt(map, "max-delay-seconds") ?? 60,
             FailFastWindow = GetInt(map, "fail-fast-window") ?? 5,
