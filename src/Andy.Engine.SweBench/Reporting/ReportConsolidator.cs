@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Andy.Engine.SweBench.Dataset;
 using Andy.Engine.SweBench.Model;
 
 namespace Andy.Engine.SweBench.Reporting;
@@ -74,4 +75,156 @@ public static class ReportConsolidator
 
     private static bool GetBool(JsonElement root, string name) =>
         root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.True;
+
+    /// <summary>
+    /// Like <see cref="Consolidate"/>, but also produces per-instance detail rows: a one-line task
+    /// gist (from the dataset problem statement, if <paramref name="datasetPath"/> is given), a
+    /// short failure reason, and a relative link to the full per-instance log on disk.
+    /// </summary>
+    public static DetailedRunReport ConsolidateDetailed(string runDir, string? datasetPath = null)
+    {
+        var summary = Consolidate(runDir);
+
+        // Optional dataset join: instance id -> (problem statement, FAIL_TO_PASS).
+        var ds = new Dictionary<string, SweBenchInstance>(StringComparer.Ordinal);
+        if (!string.IsNullOrEmpty(datasetPath) && File.Exists(datasetPath))
+        {
+            try
+            {
+                foreach (var inst in new SweBenchDatasetLoader().LoadFromFile(datasetPath))
+                    ds[inst.InstanceId] = inst;
+            }
+            catch { /* dataset is best-effort enrichment */ }
+        }
+
+        var evalDir = Path.Combine(runDir, "logs", "run_evaluation");
+        var rows = new List<InstanceDetail>();
+        var allIds = summary.SubmittedIds.Count > 0
+            ? summary.SubmittedIds
+            : summary.ResolvedIds.Concat(summary.UnresolvedIds).Concat(summary.EmptyPatchIds).Concat(summary.ErrorIds);
+
+        foreach (var id in allIds)
+        {
+            var status = ClassifyFromReport(summary, id);
+            ds.TryGetValue(id, out var inst);
+            var instDir = Path.Combine(evalDir, id);
+            rows.Add(new InstanceDetail
+            {
+                InstanceId = id,
+                Repo = inst?.Repo ?? RepoOf(id),
+                Status = status,
+                TaskSummary = Gist(inst?.ProblemStatement),
+                FailureSummary = status == InstanceStatus.Resolved ? null : FailureReason(status, instDir, inst),
+                DetailsHref = BestDetailsHref(runDir, evalDir, id),
+            });
+        }
+
+        // Order: failures first (most interesting), then resolved; stable by id within a group.
+        rows = rows
+            .OrderBy(r => r.Status == InstanceStatus.Resolved ? 1 : 0)
+            .ThenBy(r => r.InstanceId, StringComparer.Ordinal)
+            .ToList();
+
+        return new DetailedRunReport(summary, rows);
+    }
+
+    private static InstanceStatus ClassifyFromReport(SweRunReport r, string id)
+    {
+        if (r.ResolvedIds.Contains(id)) return InstanceStatus.Resolved;
+        if (r.EmptyPatchIds.Contains(id)) return InstanceStatus.EmptyPatch;
+        if (r.ErrorIds.Contains(id)) return InstanceStatus.Error;
+        return InstanceStatus.Unresolved;
+    }
+
+    private static string? FailureReason(InstanceStatus status, string instDir, SweBenchInstance? inst)
+    {
+        if (status == InstanceStatus.EmptyPatch)
+            return "No patch produced — the agent made no file edits (gave up or ran out of turns).";
+
+        // Read the per-instance grade report for error / status_map.
+        var rf = Path.Combine(instDir, "report.json");
+        if (!File.Exists(rf))
+            return status == InstanceStatus.Error ? "Run error (no grade report)." : "Did not resolve.";
+
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(rf));
+            var root = doc.RootElement;
+
+            if (status == InstanceStatus.Error)
+            {
+                var err = root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+                if (GetBool(root, "timed_out")) return "Timed out.";
+                return Truncate("Run error: " + (err ?? "unknown"), 200);
+            }
+
+            // Unresolved: which FAIL_TO_PASS are still failing?
+            var statusMap = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (root.TryGetProperty("status_map", out var sm) && sm.ValueKind == JsonValueKind.Object)
+                foreach (var p in sm.EnumerateObject())
+                    statusMap[p.Name] = p.Value.GetString() ?? "";
+
+            if (!GetBool(root, "patch_applied"))
+                return "The model patch did not apply to the repo.";
+
+            if (inst is { FailToPass.Count: > 0 })
+            {
+                bool Passed(string t) => statusMap.TryGetValue(t, out var s) && (s is "Passed" or "XFail");
+                var failing = inst.FailToPass.Where(t => !Passed(t)).ToList();
+                if (failing.Count > 0)
+                {
+                    var shown = string.Join(", ", failing.Take(3).Select(ShortTest));
+                    var more = failing.Count > 3 ? $" (+{failing.Count - 3} more)" : "";
+                    return Truncate($"{failing.Count}/{inst.FailToPass.Count} target tests still failing: {shown}{more}", 240);
+                }
+                return "PASS_TO_PASS regression (a previously-passing test broke).";
+            }
+
+            return "Patch applied but the target tests did not pass.";
+        }
+        catch
+        {
+            return "Did not resolve.";
+        }
+    }
+
+    /// <summary>"path/to/test_file.py::ClassName::test_method[param]" -> "test_method[param]".</summary>
+    private static string ShortTest(string testId)
+    {
+        var afterColons = testId.Contains("::", StringComparison.Ordinal)
+            ? testId[(testId.LastIndexOf("::", StringComparison.Ordinal) + 2)..]
+            : testId;
+        return afterColons.Length > 60 ? afterColons[..60] + "…" : afterColons;
+    }
+
+    private static string? BestDetailsHref(string runDir, string evalDir, string id)
+    {
+        // Relative to where report.html is written (the run dir, by default).
+        foreach (var name in new[] { "test_output.txt", "report.json", "patch.diff" })
+            if (File.Exists(Path.Combine(evalDir, id, name)))
+                return $"logs/run_evaluation/{id}/{name}";
+        return null;
+    }
+
+    private static string? Gist(string? problemStatement)
+    {
+        if (string.IsNullOrWhiteSpace(problemStatement)) return null;
+        var firstLine = problemStatement
+            .Split('\n')
+            .Select(l => l.Trim())
+            .FirstOrDefault(l => l.Length > 0) ?? problemStatement.Trim();
+        return Truncate(firstLine, 180);
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max].TrimEnd() + "…";
+
+    private static string RepoOf(string instanceId)
+    {
+        var us = instanceId.IndexOf("__", StringComparison.Ordinal);
+        if (us < 0) return "(unknown)";
+        var owner = instanceId[..us];
+        var rest = instanceId[(us + 2)..];
+        var dash = rest.LastIndexOf('-');
+        return $"{owner}/{(dash > 0 ? rest[..dash] : rest)}";
+    }
 }

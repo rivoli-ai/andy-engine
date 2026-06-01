@@ -21,7 +21,22 @@ public static class HtmlReporter
         return outputPath;
     }
 
-    public static string Render(SweRunReport report)
+    /// <summary>Writes the detailed report to <paramref name="outputPath"/> and returns it.</summary>
+    public static string Write(DetailedRunReport report, string outputPath)
+    {
+        var dir = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+        File.WriteAllText(outputPath, Render(report));
+        return outputPath;
+    }
+
+    public static string Render(SweRunReport report) => RenderCore(report, null);
+
+    /// <summary>Renders the summary plus per-instance detail rows (task gist, failure reason, link).</summary>
+    public static string Render(DetailedRunReport detailed) => RenderCore(detailed.Summary, detailed.Instances);
+
+    private static string RenderCore(SweRunReport report, IReadOnlyList<InstanceDetail>? details)
     {
         var m = report.Metadata;
         var rate = report.ResolveRate * 100;
@@ -60,6 +75,8 @@ public static class HtmlReporter
               padding:12px 16px;margin-bottom:20px;color:var(--warn)}
             details{margin:6px 0}summary{cursor:pointer;color:var(--mut)}
             code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+            a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+            td:nth-child(3){color:var(--mut);max-width:340px}
             </style></head><body><div class="wrap">
             """);
 
@@ -109,12 +126,17 @@ public static class HtmlReporter
             sb.Append("</table>");
         }
 
-        // Instance lists
-        InstanceList(sb, "Resolved", report.ResolvedIds, "ok");
-        InstanceList(sb, "Unresolved", report.UnresolvedIds, "bad");
-        InstanceList(sb, "Empty patch", report.EmptyPatchIds, "warn");
-        if (report.ErrorIds.Count > 0)
-            InstanceList(sb, "Errors", report.ErrorIds, "bad");
+        // Instance lists — detailed rows when available, else bare id lists.
+        if (details is { Count: > 0 })
+            RenderDetailed(sb, details);
+        else
+        {
+            InstanceList(sb, "Resolved", report.ResolvedIds, "ok");
+            InstanceList(sb, "Unresolved", report.UnresolvedIds, "bad");
+            InstanceList(sb, "Empty patch", report.EmptyPatchIds, "warn");
+            if (report.ErrorIds.Count > 0)
+                InstanceList(sb, "Errors", report.ErrorIds, "bad");
+        }
 
         sb.Append($"<div class=\"sub\" style=\"margin-top:32px\">schema v{report.SchemaVersion} · generated from report.json</div>");
         sb.Append("</div></body></html>");
@@ -133,6 +155,45 @@ public static class HtmlReporter
             sb.Append($"<tr><td><code>{Esc(id)}</code></td></tr>");
         sb.Append("</table></details>");
     }
+
+    private static void RenderDetailed(StringBuilder sb, IReadOnlyList<InstanceDetail> details)
+    {
+        var failures = details.Where(d => d.Status != InstanceStatus.Resolved).ToList();
+        var resolved = details.Where(d => d.Status == InstanceStatus.Resolved).ToList();
+
+        if (failures.Count > 0)
+        {
+            sb.Append($"<h2>Failures <span class=\"pill bad\">{failures.Count}</span></h2>");
+            sb.Append("<table><tr><th>Status</th><th>Instance</th><th>Task</th><th>Why it failed</th></tr>");
+            foreach (var d in failures)
+                sb.Append($"<tr><td>{StatusPill(d.Status)}</td><td>{InstanceCell(d)}</td>"
+                        + $"<td>{Esc(d.TaskSummary ?? "")}</td><td>{Esc(d.FailureSummary ?? "")}</td></tr>");
+            sb.Append("</table>");
+        }
+
+        if (resolved.Count > 0)
+        {
+            sb.Append($"<details><summary><span class=\"pill ok\">{resolved.Count}</span> Resolved</summary>");
+            sb.Append("<table><tr><th>Instance</th><th>Task</th></tr>");
+            foreach (var d in resolved)
+                sb.Append($"<tr><td>{InstanceCell(d)}</td><td>{Esc(d.TaskSummary ?? "")}</td></tr>");
+            sb.Append("</table></details>");
+        }
+    }
+
+    private static string InstanceCell(InstanceDetail d) =>
+        d.DetailsHref is { } href
+            ? $"<a href=\"{Esc(href)}\" title=\"full log\"><code>{Esc(d.InstanceId)}</code></a>"
+            : $"<code>{Esc(d.InstanceId)}</code>";
+
+    private static string StatusPill(InstanceStatus s) => s switch
+    {
+        InstanceStatus.Resolved => "<span class=\"pill ok\">resolved</span>",
+        InstanceStatus.Unresolved => "<span class=\"pill bad\">unresolved</span>",
+        InstanceStatus.EmptyPatch => "<span class=\"pill warn\">empty patch</span>",
+        InstanceStatus.Error => "<span class=\"pill bad\">error</span>",
+        _ => "",
+    };
 
     private static void AppendKv(StringBuilder sb, string k, string? v)
     {

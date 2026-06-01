@@ -69,6 +69,54 @@ public class ReportRenderTests
         }
     }
 
+    [Fact]
+    public void ConsolidateDetailed_Builds_Per_Instance_Rows_With_Failure_Reasons()
+    {
+        var runDir = Path.Combine(Path.GetTempPath(), "swedet_" + Guid.NewGuid().ToString("N"));
+        var evalDir = Path.Combine(runDir, "logs", "run_evaluation");
+        try
+        {
+            Directory.CreateDirectory(runDir);
+            File.WriteAllLines(Path.Combine(runDir, "predictions.jsonl"), new[]
+            {
+                """{"instance_id":"django__django-1","model_name_or_path":"m","model_patch":"diff"}""",
+                """{"instance_id":"django__django-2","model_name_or_path":"m","model_patch":""}""",
+            });
+            WritePerInstance(evalDir, "django__django-1", "No");        // unresolved
+            WriteEmptyPatch(evalDir, "django__django-2");               // empty patch
+
+            var detailed = ReportConsolidator.ConsolidateDetailed(runDir);
+
+            Assert.Equal(2, detailed.Instances.Count);
+            var unresolved = detailed.Instances.Single(i => i.InstanceId == "django__django-1");
+            Assert.Equal(InstanceStatus.Unresolved, unresolved.Status);
+            Assert.Equal("django/django", unresolved.Repo);
+            Assert.False(string.IsNullOrEmpty(unresolved.FailureSummary));
+
+            var empty = detailed.Instances.Single(i => i.InstanceId == "django__django-2");
+            Assert.Equal(InstanceStatus.EmptyPatch, empty.Status);
+            Assert.Contains("No patch", empty.FailureSummary);
+
+            // Detailed render contains the Failures section.
+            Assert.Contains("Why it failed", HtmlReporter.Render(detailed));
+        }
+        finally
+        {
+            try { Directory.Delete(runDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    private static void WriteEmptyPatch(string evalDir, string id)
+    {
+        var dir = Path.Combine(evalDir, id);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "report.json"), JsonSerializer.Serialize(new
+        {
+            instance_id = id, patch_applied = false, test_patch_applied = false,
+            empty_patch = true, resolved = false, resolved_status = "No", error = (string?)null, timed_out = false,
+        }));
+    }
+
     private static void WritePerInstance(string evalDir, string id, string resolvedStatus)
     {
         var dir = Path.Combine(evalDir, id);

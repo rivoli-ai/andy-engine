@@ -31,25 +31,29 @@ internal static class Program
                 // A directory => consolidate the whole run from its on-disk artifacts (handles
                 // batched/--resume runs whose top-level report.json is only the last batch).
                 // A file => render that report.json directly.
-                SweRunReport report;
-                string defaultOutDir;
                 if (Directory.Exists(reportPath))
                 {
-                    report = ReportConsolidator.Consolidate(reportPath);
-                    defaultOutDir = reportPath;
+                    // Run dir: consolidate all batches + enrich per-instance from the dataset
+                    // (task gist, which target tests failed) when --dataset is given.
+                    var dsIdx = Array.IndexOf(args, "--dataset");
+                    var datasetPath = dsIdx >= 0 && dsIdx + 1 < args.Length ? args[dsIdx + 1] : null;
+                    var detailed = ReportConsolidator.ConsolidateDetailed(reportPath, datasetPath);
+                    var outPath = outIdx >= 0 && outIdx + 1 < args.Length
+                        ? args[outIdx + 1]
+                        : Path.Combine(reportPath, "report.html");
+                    Console.WriteLine($"Wrote {HtmlReporter.Write(detailed, outPath)}  "
+                                    + $"({detailed.Summary.ResolvedInstances}/{detailed.Summary.TotalInstances} resolved)");
                 }
                 else
                 {
                     var json = await File.ReadAllTextAsync(reportPath);
-                    report = JsonSerializer.Deserialize<SweRunReport>(json)
+                    var report = JsonSerializer.Deserialize<SweRunReport>(json)
                         ?? throw new InvalidOperationException("report.json deserialized to null");
-                    defaultOutDir = Path.GetDirectoryName(Path.GetFullPath(reportPath)) ?? ".";
+                    var dir = Path.GetDirectoryName(Path.GetFullPath(reportPath)) ?? ".";
+                    var outPath = outIdx >= 0 && outIdx + 1 < args.Length ? args[outIdx + 1] : Path.Combine(dir, "report.html");
+                    Console.WriteLine($"Wrote {HtmlReporter.Write(report, outPath)}  "
+                                    + $"({report.ResolvedInstances}/{report.TotalInstances} resolved)");
                 }
-                var outPath = outIdx >= 0 && outIdx + 1 < args.Length
-                    ? args[outIdx + 1]
-                    : Path.Combine(defaultOutDir, "report.html");
-                Console.WriteLine($"Wrote {HtmlReporter.Write(report, outPath)}  "
-                                + $"({report.ResolvedInstances}/{report.TotalInstances} resolved)");
                 return 0;
             }
             catch (Exception ex)

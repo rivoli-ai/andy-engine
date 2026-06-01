@@ -51,7 +51,9 @@ public static class SweBenchCliOptions
           --work-dir <path>           Default: ./swebench-runs
           --run-id <name>             Default: timestamp
           --reporter <c,j,h>          console,json,html  (default: console,json)
-          --render-report <report.json>  Render an existing report.json to report.html and exit (--out <path>)
+                    --render-report <report.json|run-dir>  Render to HTML and exit; a run-dir consolidates all
+                                      batches (no re-grade). Add --dataset <path> to enrich with task
+                                      summaries + which target tests failed; --out <path> for output.
           --resume                    Skip instances already in predictions.jsonl
           --keep-workspaces           Keep per-instance workspaces for debugging
           -h | --help                 Show this help
