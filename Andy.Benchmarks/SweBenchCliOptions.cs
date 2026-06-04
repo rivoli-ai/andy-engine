@@ -27,6 +27,14 @@ public static class SweBenchCliOptions
           --predictions-path <path|gold> Grade an existing predictions.jsonl, or "gold"
           --gold-survey               Gold mode: grade ALL instances (no fail-fast on first non-resolve)
 
+        Agent (agent stage):
+          --agent andy|external       Which agent drives each instance. Default: andy (in-process SimpleAgent)
+          --agent-cmd "<template>"    For --agent external: command to run per instance. Whole-token
+                                      placeholders {model} {workspace} {prompt} {prompt_file} are
+                                      substituted (no shell). Cwd = workspace. If no {prompt}/{prompt_file}
+                                      token, the problem statement is piped to stdin.
+                                      Example: opencode run --model {model} {prompt}
+
         Model / provider (agent stage):
           --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
           --provider-base <url>       Default: https://openrouter.ai/api/v1
@@ -90,6 +98,8 @@ public static class SweBenchCliOptions
             Subset = subset,
             Stage = ParseStage(Get(map, "stage")),
             PredictionsPath = Get(map, "predictions-path"),
+            Agent = Get(map, "agent") ?? "andy",
+            AgentCommand = Get(map, "agent-cmd"),
             Model = Get(map, "model") ?? "openai/gpt-oss-20b:free",
             ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
             MaxTurns = GetInt(map, "max-turns") ?? 50,

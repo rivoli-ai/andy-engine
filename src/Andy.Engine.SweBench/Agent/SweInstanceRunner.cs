@@ -22,16 +22,30 @@ public sealed class SweInstanceRunner
 {
     private readonly RunContext _ctx;
     private readonly SweWorkspaceManager _workspaces;
-    private readonly SweAgentFactory _agentFactory;
+    private readonly ISweAgentFactory _agentFactory;
     private readonly TextWriter? _log;
 
     public SweInstanceRunner(RunContext ctx, SweWorkspaceManager workspaces, TextWriter? log = null)
+        : this(ctx, workspaces, SelectAgentFactory(ctx), log)
+    {
+    }
+
+    /// <summary>Test/DI seam: inject an arbitrary agent factory (e.g. a fake or a CLI agent).</summary>
+    public SweInstanceRunner(RunContext ctx, SweWorkspaceManager workspaces, ISweAgentFactory agentFactory, TextWriter? log = null)
     {
         _ctx = ctx;
         _workspaces = workspaces;
-        _agentFactory = new SweAgentFactory(ctx);
+        _agentFactory = agentFactory;
         _log = log;
     }
+
+    /// <summary>Picks the agent implementation from <see cref="RunContext.Agent"/>.</summary>
+    public static ISweAgentFactory SelectAgentFactory(RunContext ctx) => ctx.Agent.ToLowerInvariant() switch
+    {
+        "andy" => new SweAgentFactory(ctx),
+        "external" => new ExternalCliAgentFactory(ctx),
+        var other => throw new ArgumentException($"Unknown --agent '{other}'. Expected andy|external."),
+    };
 
     public async Task<AgentRunResult> RunAsync(SweBenchInstance instance, CancellationToken cancellationToken = default)
     {
@@ -51,7 +65,7 @@ public sealed class SweInstanceRunner
         {
             using var swe = _agentFactory.Create(workspace);
 
-            var result = await swe.Agent.ProcessMessageAsync(instance.ProblemStatement, cancellationToken);
+            var result = await swe.RunAsync(instance.ProblemStatement, cancellationToken);
             var patch = await _workspaces.GetModelPatchAsync(workspace, instance, cancellationToken);
 
             var prediction = new SwePrediction

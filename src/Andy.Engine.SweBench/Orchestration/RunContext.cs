@@ -24,6 +24,21 @@ public sealed class RunContext
     public bool IsGoldValidation =>
         string.Equals(PredictionsPath, "gold", StringComparison.OrdinalIgnoreCase);
 
+    // ---- Agent selection ----
+    /// <summary>
+    /// Which agent drives each instance: "andy" (the in-process <c>SimpleAgent</c>, default) or
+    /// "external" (an out-of-process CLI agent — opencode, aider, ... — via <see cref="AgentCommand"/>).
+    /// The harness captures the patch by diffing the workspace either way, so both grade identically.
+    /// </summary>
+    public string Agent { get; init; } = "andy";
+
+    /// <summary>
+    /// For <c>Agent == "external"</c>: the command template to launch, whitespace-tokenized.
+    /// Whole-token placeholders {model}/{workspace}/{prompt}/{prompt_file} are substituted (never
+    /// shell-interpolated). Example: <c>opencode run --model {model} {prompt}</c>.
+    /// </summary>
+    public string? AgentCommand { get; init; }
+
     // ---- Model / provider (agent stage) ----
     // Free, tool-capable OpenRouter model (Qwen free was retired). Kimi
     // (moonshotai/kimi-k2.6:free) is a stronger coding alternative via --model.

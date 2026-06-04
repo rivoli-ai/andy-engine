@@ -12,8 +12,12 @@ using Microsoft.Extensions.Logging;
 
 namespace Andy.Engine.SweBench.Agent;
 
-/// <summary>A built agent plus the resources it owns; dispose to release the DI container.</summary>
-public sealed class SweAgent : IDisposable
+/// <summary>
+/// The andy in-process agent (a <see cref="SimpleAgent"/>) plus the resources it owns; dispose
+/// to release the DI container. Implements <see cref="ISweAgent"/> so it is interchangeable with
+/// external CLI agents at the <c>SweInstanceRunner</c> seam.
+/// </summary>
+public sealed class SweAgent : ISweAgent
 {
     private readonly ServiceProvider _services;
 
@@ -29,6 +33,12 @@ public sealed class SweAgent : IDisposable
     public string ProviderName { get; }
     public IReadOnlyList<string> AvailableTools { get; }
 
+    public async Task<SweAgentRunResult> RunAsync(string problemStatement, CancellationToken cancellationToken = default)
+    {
+        var r = await Agent.ProcessMessageAsync(problemStatement, cancellationToken);
+        return new SweAgentRunResult(r.Success, r.StopReason, r.TurnCount, r.Duration);
+    }
+
     public void Dispose()
     {
         Agent.Dispose();
@@ -41,7 +51,7 @@ public sealed class SweAgent : IDisposable
 /// (file/search/edit only — no process execution), the LLM provider (OpenAI provider pointed
 /// at OpenRouter) wrapped in the rate-limit decorator.
 /// </summary>
-public sealed class SweAgentFactory
+public sealed class SweAgentFactory : ISweAgentFactory
 {
     private readonly RunContext _ctx;
 
@@ -49,6 +59,8 @@ public sealed class SweAgentFactory
 
     /// <summary>The OpenRouter API key from the environment (null/empty if unset).</summary>
     public static string? ApiKey => Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+
+    ISweAgent ISweAgentFactory.Create(string workspaceDir) => Create(workspaceDir);
 
     public SweAgent Create(string workspaceDir)
     {

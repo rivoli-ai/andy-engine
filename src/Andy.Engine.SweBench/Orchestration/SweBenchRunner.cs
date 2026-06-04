@@ -58,26 +58,26 @@ public sealed class SweBenchRunner
                 break;
 
             case RunStage.Grade:
-            {
-                var byId = ResolvePredictions(subset);
-                abortReason = await RunGradeStageAsync(subset, byId, predictions, grades, cancellationToken);
-                break;
-            }
+                {
+                    var byId = ResolvePredictions(subset);
+                    abortReason = await RunGradeStageAsync(subset, byId, predictions, grades, cancellationToken);
+                    break;
+                }
 
             case RunStage.Agent:
                 abortReason = await RunAgentStageAsync(subset, predictions, cancellationToken);
                 break;
 
             case RunStage.All:
-            {
-                abortReason = await RunAgentStageAsync(subset, predictions, cancellationToken);
-                if (abortReason is null)
                 {
-                    var byId = predictions.ToDictionary(p => p.InstanceId, p => p, StringComparer.Ordinal);
-                    abortReason = await RunGradeStageAsync(subset, byId, new List<SwePrediction>(), grades, cancellationToken);
+                    abortReason = await RunAgentStageAsync(subset, predictions, cancellationToken);
+                    if (abortReason is null)
+                    {
+                        var byId = predictions.ToDictionary(p => p.InstanceId, p => p, StringComparer.Ordinal);
+                        abortReason = await RunGradeStageAsync(subset, byId, new List<SwePrediction>(), grades, cancellationToken);
+                    }
+                    break;
                 }
-                break;
-            }
         }
 
         var completedAt = DateTimeOffset.UtcNow;
@@ -110,8 +110,10 @@ public sealed class SweBenchRunner
         List<SwePrediction> predictions,
         CancellationToken cancellationToken)
     {
-        // ---- Pre-flight: a key must be present, else this is a config error (abort). ----
-        if (string.IsNullOrWhiteSpace(SweAgentFactory.ApiKey))
+        // ---- Pre-flight: the in-process andy agent reaches OpenRouter directly, so it needs a
+        // key. An external CLI agent carries its own auth, so we don't gate on the key there. ----
+        var usingAndyAgent = string.Equals(_ctx.Agent, "andy", StringComparison.OrdinalIgnoreCase);
+        if (usingAndyAgent && string.IsNullOrWhiteSpace(SweAgentFactory.ApiKey))
             return "OPENROUTER_API_KEY is not set (agent stage cannot reach the model)";
 
         var checkpoint = new PredictionCheckpoint(_ctx.PredictionsFilePath);

@@ -88,6 +88,32 @@ dotnet run --project Andy.Benchmarks -- \
   --resume                       # checkpoints to predictions.jsonl; safe to re-run
 ```
 
+### Swapping the agent (`--agent`)
+
+The harness is agent-agnostic: it captures the patch by diffing the workspace, so the agent only
+has to edit files. Two implementations are selectable at the `SweInstanceRunner` seam:
+
+- `--agent andy` (default): the in-process `SimpleAgent` (reaches OpenRouter directly, needs
+  `OPENROUTER_API_KEY`).
+- `--agent external --agent-cmd "<template>"`: any out-of-process CLI agent (opencode, aider, ...).
+  The template is whitespace-tokenized; whole-token placeholders are substituted (never
+  shell-interpolated, so no injection): `{model}`, `{workspace}`, `{prompt}` (statement as one
+  argv element), `{prompt_file}` (path to a temp file holding the statement). With no
+  `{prompt}`/`{prompt_file}` token, the statement is piped to stdin. The process runs with its
+  working directory set to the instance workspace; `--agent-timeout-seconds` bounds it. The
+  external agent carries its own auth, so the OpenRouter key is not required.
+
+```bash
+# Compare opencode against andy on the same gold-validated subset, same grader, same report:
+dotnet run --project Andy.Benchmarks -- \
+  --dataset data/<subset>.jsonl --stage all --run-id opencode-baseline \
+  --agent external --agent-cmd "opencode run --model {model} {prompt}" \
+  --model xiaomi/mimo-v2.5 --subset-file data/<validated>.subset --resume
+```
+
+Both arms grade identically, which is what makes a no-skills-vs-skills (or andy-vs-opencode)
+comparison meaningful. (Verify the exact opencode subcommand/flags against your installed version.)
+
 Resilience / safety knobs:
 
 - `--agent-timeout-seconds <n>` (default 1800): per-instance wall-clock cap. A runaway agent is
