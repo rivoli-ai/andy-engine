@@ -34,6 +34,10 @@ public static class SweBenchCliOptions
                                       substituted (no shell). Cwd = workspace. If no {prompt}/{prompt_file}
                                       token, the problem statement is piped to stdin.
                                       Example: opencode run --model {model} {prompt}
+          --system-prompt-file <path> (andy) Replace the built-in base prompt with this file's text
+                                      ({workspace} token substituted). Validated: exists, <=256KB, text.
+          --rules-dir <path>          (andy) Dir of per-repo rules <repo>.md (e.g. django__django.md)
+                                      appended to the system prompt for matching instances (<=64KB each).
 
         Model / provider (agent stage):
           --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
@@ -100,6 +104,8 @@ public static class SweBenchCliOptions
             PredictionsPath = Get(map, "predictions-path"),
             Agent = Get(map, "agent") ?? "andy",
             AgentCommand = Get(map, "agent-cmd"),
+            SystemPromptFile = Get(map, "system-prompt-file"),
+            RulesDir = Get(map, "rules-dir"),
             Model = Get(map, "model") ?? "openai/gpt-oss-20b:free",
             ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
             MaxTurns = GetInt(map, "max-turns") ?? 50,

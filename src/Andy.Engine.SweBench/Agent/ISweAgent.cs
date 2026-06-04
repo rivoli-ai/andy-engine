@@ -1,3 +1,5 @@
+using Andy.Engine.SweBench.Model;
+
 namespace Andy.Engine.SweBench.Agent;
 
 /// <summary>
@@ -24,8 +26,11 @@ public interface ISweAgent : IDisposable
     Task<SweAgentRunResult> RunAsync(string problemStatement, CancellationToken cancellationToken = default);
 }
 
-/// <summary>Creates an <see cref="ISweAgent"/> scoped to a given workspace directory.</summary>
+/// <summary>Creates an <see cref="ISweAgent"/> scoped to a given workspace + instance.</summary>
 public interface ISweAgentFactory
 {
-    ISweAgent Create(string workspaceDir);
+    /// <param name="workspaceDir">The prepared git working tree for this instance.</param>
+    /// <param name="instance">The instance being solved (repo, id, problem) — lets an agent
+    /// specialize per repo, e.g. append per-repo rules to the system prompt.</param>
+    ISweAgent Create(string workspaceDir, SweBenchInstance instance);
 }

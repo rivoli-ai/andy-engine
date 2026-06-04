@@ -149,7 +149,9 @@ public sealed class ExternalCliAgentFactory : ISweAgentFactory
 
     public ExternalCliAgentFactory(RunContext ctx) => _ctx = ctx;
 
-    public ISweAgent Create(string workspaceDir) =>
+    // The external agent's instructions come from its own config (e.g. opencode AGENTS.md), so the
+    // instance/repo is not used here.
+    public ISweAgent Create(string workspaceDir, Model.SweBenchInstance instance) =>
         new ExternalCliAgent(
             _ctx.AgentCommand ?? throw new InvalidOperationException(
                 "--agent external requires --agent-cmd \"<template>\" (e.g. 'opencode run --model {model} {prompt}')."),

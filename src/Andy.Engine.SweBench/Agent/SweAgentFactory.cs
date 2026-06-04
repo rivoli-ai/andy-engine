@@ -54,15 +54,23 @@ public sealed class SweAgent : ISweAgent
 public sealed class SweAgentFactory : ISweAgentFactory
 {
     private readonly RunContext _ctx;
+    private readonly SwePromptConfig _prompt;
 
-    public SweAgentFactory(RunContext ctx) => _ctx = ctx;
+    // Loads/validates the prompt sources once (throws a clear ArgumentException on a bad
+    // --system-prompt-file / --rules-dir, before any instance work begins).
+    public SweAgentFactory(RunContext ctx)
+    {
+        _ctx = ctx;
+        _prompt = SwePromptConfig.Load(ctx.SystemPromptFile, ctx.RulesDir);
+    }
 
     /// <summary>The OpenRouter API key from the environment (null/empty if unset).</summary>
     public static string? ApiKey => Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
 
-    ISweAgent ISweAgentFactory.Create(string workspaceDir) => Create(workspaceDir);
+    ISweAgent ISweAgentFactory.Create(string workspaceDir, Model.SweBenchInstance instance) =>
+        Create(workspaceDir, instance.Repo);
 
-    public SweAgent Create(string workspaceDir)
+    public SweAgent Create(string workspaceDir, string repo)
     {
         var services = new ServiceCollection();
 
@@ -119,7 +127,7 @@ public sealed class SweAgentFactory : ISweAgentFactory
             llm,
             registry,
             executor,
-            systemPrompt: SweSystemPrompt.Build(workspaceDir),
+            systemPrompt: _prompt.Build(workspaceDir, repo),
             maxTurns: _ctx.MaxTurns,
             workingDirectory: workspaceDir,
             logger: provider.GetService<ILoggerFactory>()?.CreateLogger<SimpleAgent>(),

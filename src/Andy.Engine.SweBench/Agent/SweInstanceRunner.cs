@@ -63,7 +63,7 @@ public sealed class SweInstanceRunner
 
         try
         {
-            using var swe = _agentFactory.Create(workspace);
+            using var swe = _agentFactory.Create(workspace, instance);
 
             var result = await swe.RunAsync(instance.ProblemStatement, cancellationToken);
             var patch = await _workspaces.GetModelPatchAsync(workspace, instance, cancellationToken);

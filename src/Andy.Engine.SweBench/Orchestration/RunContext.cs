@@ -39,6 +39,20 @@ public sealed class RunContext
     /// </summary>
     public string? AgentCommand { get; init; }
 
+    /// <summary>
+    /// (andy agent) Path to a file whose contents REPLACE the built-in base system prompt. A
+    /// <c>{workspace}</c> token is substituted with the instance workspace; if absent, a working-dir
+    /// line is appended. Validated at run start (path/size/text). Null = use the built-in prompt.
+    /// </summary>
+    public string? SystemPromptFile { get; init; }
+
+    /// <summary>
+    /// (andy agent) Directory of per-repo rules files (<c>&lt;repo&gt;.md</c>, e.g.
+    /// <c>django__django.md</c> or <c>django.md</c>), appended to the system prompt for matching
+    /// instances. Out-of-band, so nothing lands in the captured git diff. Null = no per-repo rules.
+    /// </summary>
+    public string? RulesDir { get; init; }
+
     // ---- Model / provider (agent stage) ----
     // Free, tool-capable OpenRouter model (Qwen free was retired). Kimi
     // (moonshotai/kimi-k2.6:free) is a stronger coding alternative via --model.

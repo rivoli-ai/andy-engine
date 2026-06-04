@@ -1,0 +1,28 @@
+# Instances UNRESOLVED by BOTH andy+mimo-v2.5 AND andy+deepseek-v4-flash (the hard core).
+# Target for the opencode arm (hold model=deepseek, vary agent) and later andy rule/skill tuning.
+astropy__astropy-13033
+astropy__astropy-13236
+astropy__astropy-13398
+astropy__astropy-14369
+astropy__astropy-14598
+django__django-10554
+django__django-10999
+django__django-11087
+django__django-11138
+django__django-11141
+django__django-11149
+django__django-11265
+django__django-11400
+django__django-11477
+django__django-11490
+django__django-11734
+django__django-11820
+django__django-11885
+django__django-12193
+django__django-12273
+django__django-12304
+django__django-12308
+django__django-12325
+django__django-12406
+django__django-12663
+django__django-13112
