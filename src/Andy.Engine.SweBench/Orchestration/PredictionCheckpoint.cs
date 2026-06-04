@@ -15,6 +15,7 @@ public sealed class PredictionCheckpoint
     };
 
     private readonly string _path;
+    private readonly object _appendLock = new();
 
     public PredictionCheckpoint(string path) => _path = path;
 
@@ -54,10 +55,17 @@ public sealed class PredictionCheckpoint
         return map;
     }
 
-    /// <summary>Appends a prediction line, creating the file/dir if needed.</summary>
+    /// <summary>
+    /// Appends a prediction line, creating the file/dir if needed. Thread-safe: serialized so
+    /// parallel instances cannot interleave a partial line into the checkpoint.
+    /// </summary>
     public void Append(SwePrediction prediction)
     {
-        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
-        File.AppendAllText(_path, JsonSerializer.Serialize(prediction, Options) + "\n");
+        var line = JsonSerializer.Serialize(prediction, Options) + "\n";
+        lock (_appendLock)
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+            File.AppendAllText(_path, line);
+        }
     }
 }

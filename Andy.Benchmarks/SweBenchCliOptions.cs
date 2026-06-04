@@ -47,6 +47,9 @@ public static class SweBenchCliOptions
           --max-context-tokens <n>    Compressed-context budget (default: 1000000; lower for small-context models)
           --max-tool-result-chars <n> Per-tool-result char cap before truncate-with-guidance (default: 100000)
           --agent-timeout-seconds <n> Per-instance wall-clock cap; 0 disables (default: 1800)
+          --max-parallel <n>          Instances to run concurrently in the agent stage (default: 1).
+                                      >1 disables the windowed fail-fast (hard-error abort only).
+                                      Keep modest (e.g. 5) to respect rate limits / local Docker.
 
         Rate-limit:
           --max-retries <n>           Default: 6
@@ -119,6 +122,7 @@ public static class SweBenchCliOptions
             MaxConsecutiveErrors = GetInt(map, "max-consecutive-errors") ?? 3,
             DockerTimeoutSeconds = GetInt(map, "docker-timeout-seconds") ?? 1800,
             AgentTimeoutSeconds = GetInt(map, "agent-timeout-seconds") ?? 1800,
+            MaxParallel = GetInt(map, "max-parallel") ?? 1,
             WorkDir = Get(map, "work-dir") ?? Path.Combine(Directory.GetCurrentDirectory(), "swebench-runs"),
             RunId = Get(map, "run-id") ?? defaultRunId,
             Reporters = reporters,

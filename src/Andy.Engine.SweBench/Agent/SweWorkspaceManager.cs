@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using Andy.Engine.SweBench.Grading;
@@ -18,6 +19,10 @@ public sealed class SweWorkspaceManager
     private readonly string _cacheDir;
     private readonly string _workRoot;
     private readonly TextWriter? _log;
+
+    // One lock per repo so concurrent instances of the same repo don't race to populate the
+    // shared bare cache. Created lazily; never removed (a handful of repos per run).
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _repoCloneLocks = new(StringComparer.Ordinal);
 
     private static readonly string[] ArtifactExcludes =
     {
@@ -143,10 +148,36 @@ public sealed class SweWorkspaceManager
         if (Directory.Exists(bare))
             return bare;
 
-        var url = $"https://github.com/{repo}.git";
-        _log?.WriteLine($"[git] bare-cloning {url} (first time; cached) ...");
-        await GitAsync(_cacheDir, cancellationToken, "clone", "--bare", "--quiet", url, bare);
-        return bare;
+        // Serialize per repo: with parallel instances, many of the same repo can reach here at
+        // once; without this they would clone into the same dir concurrently and corrupt the cache.
+        var gate = _repoCloneLocks.GetOrAdd(repo, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (Directory.Exists(bare))   // another instance populated it while we waited
+                return bare;
+
+            // Clone into a temp dir and atomically rename in, so an interrupted/failed clone never
+            // leaves a half-populated cache dir that the Directory.Exists check would trust.
+            var url = $"https://github.com/{repo}.git";
+            _log?.WriteLine($"[git] bare-cloning {url} (first time; cached) ...");
+            var tmp = bare + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                await GitAsync(_cacheDir, cancellationToken, "clone", "--bare", "--quiet", url, tmp);
+                Directory.Move(tmp, bare);
+            }
+            catch
+            {
+                try { if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true); } catch { /* best effort */ }
+                throw;
+            }
+            return bare;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task GitAsync(string cwd, CancellationToken ct, params string[] args)

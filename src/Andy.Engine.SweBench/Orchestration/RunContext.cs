@@ -111,6 +111,14 @@ public sealed class RunContext
     /// </summary>
     public int AgentTimeoutSeconds { get; init; } = 1800;
 
+    /// <summary>
+    /// Number of instances to run concurrently in the agent stage. 1 (default) = sequential, with
+    /// the windowed fail-fast gate. &gt;1 runs a bounded pool (instances are independent) and aborts
+    /// the batch only on a HARD error (auth/rate-exhausted). Keep modest to avoid overloading the
+    /// model backend / OpenRouter rate limits and local Docker. The grade stage stays sequential.
+    /// </summary>
+    public int MaxParallel { get; init; } = 1;
+
     // ---- Grading ----
     public int DockerTimeoutSeconds { get; init; } = 1800;
 

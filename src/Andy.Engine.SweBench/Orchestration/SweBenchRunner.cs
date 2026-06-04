@@ -126,58 +126,127 @@ public sealed class SweBenchRunner
 
         _log.WriteLine($"Model: {_ctx.Model} via {_ctx.ProviderBaseUrl} (max {_ctx.MaxTurns} turns/instance)");
 
+        // Resumed instances are already done; the rest are pending work.
+        var predLock = new object();
+        var pending = new List<SweBenchInstance>();
         foreach (var instance in subset)
         {
             if (_ctx.Resume && done.TryGetValue(instance.InstanceId, out var existing))
             {
                 _log.WriteLine($"  [resume] {instance.InstanceId}: already in checkpoint");
                 predictions.Add(existing);
-                continue;
             }
-
-            _log.WriteLine($"  [agent] {instance.InstanceId} ...");
-
-            // Per-instance wall-clock cap: cancel a runaway agent and move on, without aborting
-            // the whole run. The outer token still cancels everything.
-            using var instanceCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (_ctx.AgentTimeoutSeconds > 0)
-                instanceCts.CancelAfter(TimeSpan.FromSeconds(_ctx.AgentTimeoutSeconds));
-
-            AgentRunResult result;
-            try
+            else
             {
-                result = await runner.RunAsync(instance, instanceCts.Token);
+                pending.Add(instance);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // Timed out (not an outer cancellation): record an empty prediction and continue.
-                _log.WriteLine($"           -> TIMED OUT after {_ctx.AgentTimeoutSeconds}s; skipping instance");
-                var timedOut = new SwePrediction
-                {
-                    InstanceId = instance.InstanceId,
-                    ModelNameOrPath = _ctx.Model,
-                    ModelPatch = string.Empty,
-                };
-                predictions.Add(timedOut);
-                checkpoint.Append(timedOut);
-                if (gate.Observe(InstanceOutcome.Soft, instance.InstanceId))
-                    break;
-                continue;
-            }
-
-            predictions.Add(result.Prediction);
-            checkpoint.Append(result.Prediction);
-
-            _log.WriteLine($"           -> {result.Detail} ({result.TurnCount} turns, {result.Duration.TotalSeconds:0.0}s)");
-
-            if (gate.Observe(result.Outcome, instance.InstanceId))
-                break;
         }
 
-        if (gate.Tripped)
-            _log.WriteLine($"FAIL-FAST: {gate.Reason}");
+        var maxParallel = Math.Max(1, _ctx.MaxParallel);
 
-        return gate.Reason;
+        if (maxParallel == 1)
+        {
+            // Sequential path: keeps the windowed fail-fast gate (observe in order, abort early).
+            foreach (var instance in pending)
+            {
+                var (_, outcome) = await RunOneInstanceAsync(runner, checkpoint, predictions, predLock, instance, cancellationToken);
+                if (gate.Observe(outcome, instance.InstanceId))
+                    break;
+            }
+
+            if (gate.Tripped)
+                _log.WriteLine($"FAIL-FAST: {gate.Reason}");
+            return gate.Reason;
+        }
+
+        // Parallel path: bounded pool of independent instances. The windowed fail-fast gate is
+        // sequential-only; here we abort the batch on a HARD error (auth/rate-exhausted = the whole
+        // run is broken), cancelling in-flight and not-yet-started instances.
+        _log.WriteLine($"Running up to {maxParallel} instances in parallel.");
+        using var batchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var slots = new SemaphoreSlim(maxParallel, maxParallel);
+        string? hardAbort = null;
+
+        var tasks = pending.Select(async instance =>
+        {
+            await slots.WaitAsync(cancellationToken);
+            try
+            {
+                if (batchCts.IsCancellationRequested)
+                    return;
+
+                var (_, outcome) = await RunOneInstanceAsync(runner, checkpoint, predictions, predLock, instance, batchCts.Token);
+                if (outcome == InstanceOutcome.HardError)
+                {
+                    lock (predLock)
+                        hardAbort ??= $"hard error on {instance.InstanceId}";
+                    batchCts.Cancel();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Batch aborted (hard error elsewhere) or outer cancellation: this instance simply
+                // didn't complete. The abort reason is recorded by whoever cancelled the batch.
+            }
+            finally
+            {
+                slots.Release();
+            }
+        }).ToList();
+
+        await Task.WhenAll(tasks);
+
+        if (hardAbort is not null)
+            _log.WriteLine($"FAIL-FAST: {hardAbort}");
+        return hardAbort;
+    }
+
+    /// <summary>
+    /// Runs one instance: per-instance timeout, capture the prediction, append to the checkpoint
+    /// (thread-safe), log. A timeout yields an empty prediction with a Soft outcome. Safe to call
+    /// concurrently. <paramref name="outerToken"/> is the batch/run token; an OCE from it (vs the
+    /// per-instance timeout) propagates so the caller can treat it as a batch abort.
+    /// </summary>
+    private async Task<(SwePrediction Prediction, InstanceOutcome Outcome)> RunOneInstanceAsync(
+        SweInstanceRunner runner,
+        PredictionCheckpoint checkpoint,
+        List<SwePrediction> predictions,
+        object predLock,
+        SweBenchInstance instance,
+        CancellationToken outerToken)
+    {
+        _log.WriteLine($"  [agent] {instance.InstanceId} ...");
+
+        using var instanceCts = CancellationTokenSource.CreateLinkedTokenSource(outerToken);
+        if (_ctx.AgentTimeoutSeconds > 0)
+            instanceCts.CancelAfter(TimeSpan.FromSeconds(_ctx.AgentTimeoutSeconds));
+
+        SwePrediction prediction;
+        InstanceOutcome outcome;
+        try
+        {
+            var result = await runner.RunAsync(instance, instanceCts.Token);
+            prediction = result.Prediction;
+            outcome = result.Outcome;
+            _log.WriteLine($"           -> {instance.InstanceId}: {result.Detail} ({result.TurnCount} turns, {result.Duration.TotalSeconds:0.0}s)");
+        }
+        catch (OperationCanceledException) when (instanceCts.IsCancellationRequested && !outerToken.IsCancellationRequested)
+        {
+            // Per-instance timeout (not a batch/outer cancellation): record an empty prediction.
+            _log.WriteLine($"           -> {instance.InstanceId}: TIMED OUT after {_ctx.AgentTimeoutSeconds}s; skipping instance");
+            prediction = new SwePrediction
+            {
+                InstanceId = instance.InstanceId,
+                ModelNameOrPath = _ctx.Model,
+                ModelPatch = string.Empty,
+            };
+            outcome = InstanceOutcome.Soft;
+        }
+
+        lock (predLock)
+            predictions.Add(prediction);
+        checkpoint.Append(prediction);
+        return (prediction, outcome);
     }
 
     /// <summary>Runs the grade stage over a resolved prediction map. Returns an abort reason if tripped.</summary>
