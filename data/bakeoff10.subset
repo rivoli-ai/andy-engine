@@ -1,0 +1,12 @@
+# 10-instance model bake-off subset: 5 mimo-resolved + 5 mimo-unresolved, repo-mixed.
+# Compare a new model against the mimo-first99-v3 baseline on these exact 10.
+django__django-10097
+django__django-10880
+django__django-10914
+astropy__astropy-12907
+astropy__astropy-13579
+django__django-10554
+django__django-10999
+django__django-11087
+astropy__astropy-13033
+astropy__astropy-13236
