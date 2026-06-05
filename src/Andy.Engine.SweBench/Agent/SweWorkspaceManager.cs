@@ -33,7 +33,9 @@ public sealed class SweWorkspaceManager
         "**/*.bak", "**/*.backup", "**/*.backup.*",
         // Reproduction tests the agent writes for the in-loop run_tests tool live at a reserved
         // prefix and must NOT land in the model patch (they are scaffolding, and edits to tests
-        // are excluded from grading anyway).
+        // are excluded from grading anyway). Git pathspecs are root-relative, so we need BOTH a
+        // bare form (matches a root-level file) and a "**/" form (matches nested).
+        "_swebench_repro_*", "*_swebench_repro_*",
         "**/_swebench_repro_*", "**/*_swebench_repro_*",
     };
 

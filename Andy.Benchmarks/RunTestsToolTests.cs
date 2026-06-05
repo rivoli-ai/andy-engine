@@ -130,6 +130,31 @@ public class RunTestsToolTests
     }
 
     [Fact]
+    public async Task ModelPatch_ExcludesRootLevelReproTest()
+    {
+        // Regression: a reproduction test written at the REPO ROOT must not land in the model patch.
+        // Git pathspecs are root-relative, so the "**/" exclude alone misses a root-level file.
+        var workDir = Directory.CreateTempSubdirectory("swe-wd-").FullName;
+        var repo = Path.Combine(workDir, "repo");
+        Directory.CreateDirectory(repo);
+        Git(repo, "init", "-q"); Git(repo, "config", "user.email", "t@t"); Git(repo, "config", "user.name", "t");
+        Directory.CreateDirectory(Path.Combine(repo, "src"));
+        File.WriteAllText(Path.Combine(repo, "src", "widget.py"), "def f():\n    return 1\n");
+        Git(repo, "add", "-A"); Git(repo, "commit", "-qm", "base");
+        // Agent's real fix + a root-level repro test.
+        File.WriteAllText(Path.Combine(repo, "src", "widget.py"), "def f():\n    return 2\n");
+        File.WriteAllText(Path.Combine(repo, "_swebench_repro_test.py"), "def test_bug(): assert f() == 2\n");
+        try
+        {
+            var mgr = new Andy.Engine.SweBench.Agent.SweWorkspaceManager(workDir);
+            var patch = await mgr.GetModelPatchAsync(repo, Inst());
+            Assert.Contains("src/widget.py", patch);
+            Assert.DoesNotContain("_swebench_repro_", patch);
+        }
+        finally { Directory.Delete(workDir, recursive: true); }
+    }
+
+    [Fact]
     public void Metadata_DeclaresNoProcessExecutionCapability()
     {
         var tool = new RunTestsTool(Inst(), "/tmp", new SweTestRunner(new FakeDocker("")), 3);
