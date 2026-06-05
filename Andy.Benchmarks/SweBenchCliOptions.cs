@@ -38,6 +38,9 @@ public static class SweBenchCliOptions
                                       ({workspace} token substituted). Validated: exists, <=256KB, text.
           --rules-dir <path>          (andy) Dir of per-repo rules <repo>.md (e.g. django__django.md)
                                       appended to the system prompt for matching instances (<=64KB each).
+          --enable-test-tool          (andy) Give the agent an in-loop run_tests tool (runs tests vs its
+                                      current edits in Docker). Opt-in; needs Docker; slower. Leakage-safe.
+          --max-test-runs <n>         Cap run_tests invocations per instance (default: 8).
 
         Model / provider (agent stage):
           --model <id>                Default: openai/gpt-oss-20b:free (free; Kimi: moonshotai/kimi-k2.6:free)
@@ -109,6 +112,8 @@ public static class SweBenchCliOptions
             AgentCommand = Get(map, "agent-cmd"),
             SystemPromptFile = Get(map, "system-prompt-file"),
             RulesDir = Get(map, "rules-dir"),
+            EnableTestTool = flags.Contains("enable-test-tool"),
+            MaxTestRuns = GetInt(map, "max-test-runs") ?? 8,
             Model = Get(map, "model") ?? "openai/gpt-oss-20b:free",
             ProviderBaseUrl = Get(map, "provider-base") ?? "https://openrouter.ai/api/v1",
             MaxTurns = GetInt(map, "max-turns") ?? 50,

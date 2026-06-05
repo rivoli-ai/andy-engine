@@ -40,6 +40,17 @@ public sealed class RunContext
     public string? AgentCommand { get; init; }
 
     /// <summary>
+    /// (andy agent) Enable the in-loop <c>run_tests</c> tool: the agent can run a test command
+    /// against its current edits inside the official Docker image and iterate. Opt-in (default
+    /// false) — it requires Docker and makes runs slower/heavier. Leakage-safe (never injects the
+    /// hidden test_patch). The grade stage is unaffected.
+    /// </summary>
+    public bool EnableTestTool { get; init; } = false;
+
+    /// <summary>Max <c>run_tests</c> invocations per instance (bounds the Docker cost).</summary>
+    public int MaxTestRuns { get; init; } = 8;
+
+    /// <summary>
     /// (andy agent) Path to a file whose contents REPLACE the built-in base system prompt. A
     /// <c>{workspace}</c> token is substituted with the instance workspace; if absent, a working-dir
     /// line is appended. Validated at run start (path/size/text). Null = use the built-in prompt.

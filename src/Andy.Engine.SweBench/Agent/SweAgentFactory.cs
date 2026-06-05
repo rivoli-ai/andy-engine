@@ -68,9 +68,9 @@ public sealed class SweAgentFactory : ISweAgentFactory
     public static string? ApiKey => Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
 
     ISweAgent ISweAgentFactory.Create(string workspaceDir, Model.SweBenchInstance instance) =>
-        Create(workspaceDir, instance.Repo);
+        Create(workspaceDir, instance);
 
-    public SweAgent Create(string workspaceDir, string repo)
+    public SweAgent Create(string workspaceDir, Model.SweBenchInstance instance)
     {
         var services = new ServiceCollection();
 
@@ -113,6 +113,19 @@ public sealed class SweAgentFactory : ISweAgentFactory
         var registry = provider.GetRequiredService<IToolRegistry>();
         var executor = provider.GetRequiredService<IToolExecutor>();
 
+        // Opt-in in-loop test tool: lets the agent run tests against its current edits in the
+        // official Docker image and iterate. Registered per-instance so it carries this instance's
+        // image/repo and a private invocation counter.
+        if (_ctx.EnableTestTool)
+        {
+            var testRunner = new Grading.SweTestRunner(
+                new Grading.DockerClient(), new Grading.TestSpecBuilder(),
+                maxOutputChars: _ctx.MaxToolResultChars);
+            var runTests = new RunTestsTool(instance, workspaceDir, testRunner, _ctx.MaxTestRuns);
+            registry.RegisterTool(runTests.Metadata, _ => runTests, new Dictionary<string, object>());
+            registry.SetToolEnabled(runTests.Metadata.Id, true);
+        }
+
         var factory = provider.GetRequiredService<ILlmProviderFactory>();
         var rawProvider = factory.CreateProvider("openrouter");
         var policy = new RateLimitPolicy
@@ -127,7 +140,7 @@ public sealed class SweAgentFactory : ISweAgentFactory
             llm,
             registry,
             executor,
-            systemPrompt: _prompt.Build(workspaceDir, repo),
+            systemPrompt: _prompt.Build(workspaceDir, instance.Repo),
             maxTurns: _ctx.MaxTurns,
             workingDirectory: workspaceDir,
             logger: provider.GetService<ILoggerFactory>()?.CreateLogger<SimpleAgent>(),

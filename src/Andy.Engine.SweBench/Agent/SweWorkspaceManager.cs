@@ -31,6 +31,10 @@ public sealed class SweWorkspaceManager
         // Safety copies some models make before editing (e.g. "base.py.backup.20260530212325").
         // These whole-file duplicates are not a fix and must not pollute the model patch.
         "**/*.bak", "**/*.backup", "**/*.backup.*",
+        // Reproduction tests the agent writes for the in-loop run_tests tool live at a reserved
+        // prefix and must NOT land in the model patch (they are scaffolding, and edits to tests
+        // are excluded from grading anyway).
+        "**/_swebench_repro_*", "**/*_swebench_repro_*",
     };
 
     public SweWorkspaceManager(string workDir, TextWriter? log = null)
@@ -140,6 +144,19 @@ public sealed class SweWorkspaceManager
     {
         try { if (Directory.Exists(workspace)) Directory.Delete(workspace, recursive: true); }
         catch { /* best effort */ }
+    }
+
+    /// <summary>
+    /// Captures the agent's CURRENT working-tree diff (staged everything, vs HEAD), with NO
+    /// test-path exclusions — used by the in-loop <c>run_tests</c> tool, which must include any
+    /// reproduction test the agent wrote so it actually runs in the container. (The final model
+    /// patch is captured separately by <see cref="GetModelPatchAsync"/>, which DOES exclude tests.)
+    /// </summary>
+    public static async Task<string> CaptureWorkingTreeDiffAsync(string workspace, CancellationToken cancellationToken = default)
+    {
+        await GitCaptureAsync(workspace, cancellationToken, "add", "-A");
+        var (stdout, _, _) = await GitCaptureAsync(workspace, cancellationToken, "diff", "--cached", "--no-color");
+        return stdout;
     }
 
     private async Task<string> EnsureBareCloneAsync(string repo, CancellationToken cancellationToken)
