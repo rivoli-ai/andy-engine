@@ -86,8 +86,19 @@ public sealed class ExternalCliAgent : ISweAgent
 
             if (!usesPromptToken)
             {
-                await proc.StandardInput.WriteAsync(problemStatement);
-                proc.StandardInput.Close();
+                // A well-behaved agent may take its input from args/workspace and never read
+                // stdin, exiting (and closing the pipe) before we finish writing. That surfaces
+                // as a broken pipe on write/close and is benign — the prompt simply went
+                // unconsumed, which is the agent's choice, not a run failure.
+                try
+                {
+                    await proc.StandardInput.WriteAsync(problemStatement);
+                    proc.StandardInput.Close();
+                }
+                catch (IOException)
+                {
+                    // child closed stdin / already exited; nothing more to feed it.
+                }
             }
 
             // Drain output concurrently so a chatty agent can't deadlock on a full pipe buffer.
