@@ -84,6 +84,3 @@ TestResult.xml
 nunit-*.xml
 # SWE-bench run outputs
 swebench-runs/
-
-# Local NuGet feed for in-development Andy.* package fixes (see NuGet.config)
-local-packages/
