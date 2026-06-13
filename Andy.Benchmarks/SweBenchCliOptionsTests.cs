@@ -9,7 +9,7 @@ public class SweBenchCliOptionsTests
     {
         var ctx = SweBenchCliOptions.Parse(new[] { "--dataset", "x.jsonl" }, "run");
         Assert.Equal(50, ctx.MaxTurns);
-        Assert.Equal(16_384, ctx.MaxOutputTokens);
+        Assert.Equal(32_768, ctx.MaxOutputTokens);
         Assert.Equal(1_000_000, ctx.MaxContextTokens);
         Assert.Equal(100_000, ctx.MaxToolResultChars);
     }
