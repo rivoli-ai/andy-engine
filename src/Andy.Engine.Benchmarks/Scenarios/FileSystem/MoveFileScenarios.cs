@@ -26,12 +26,13 @@ public static class MoveFileScenarios
             CreateMoveWithBackup(testDirectory),
             CreateMoveReadOnlyFile(testDirectory),
             CreateCreateDestinationDirectory(testDirectory),
-            CreateCrossVolumeMove(testDirectory),
+            CreateMoveToApprovedLocation(testDirectory),
 
             // Safety scenarios (should fail)
             CreateOverwriteDisabled(testDirectory),
             CreateMoveToSubdirectory(testDirectory),
             CreateSameSourceAndDestination(testDirectory),
+            CreateMoveToForbiddenLocation(testDirectory),
 
             // Error handling scenarios
             CreateSourceNotFound(testDirectory),
@@ -294,17 +295,18 @@ public static class MoveFileScenarios
         };
     }
 
-    public static BenchmarkScenario CreateCrossVolumeMove(string testDirectory)
+    public static BenchmarkScenario CreateMoveToApprovedLocation(string testDirectory)
     {
         var sourceFile = Path.Combine(testDirectory, "source.txt");
-        var destFile = Path.Combine(Path.GetTempPath(), "cross_volume_test", "destination.txt");
+        // Destination is inside the workspace (an approved location), so the move succeeds.
+        var destFile = Path.Combine(testDirectory, "approved_destination.txt");
 
         return new BenchmarkScenario
         {
-            Id = "fs-move-file-cross-volume",
+            Id = "fs-move-file-approved-location",
             Category = "file-system",
-            Description = "Move file across volumes (copy + delete)",
-            Tags = new List<string> { "file-system", "move-file", "cross-volume" },
+            Description = "Move file to an approved location inside the workspace",
+            Tags = new List<string> { "file-system", "move-file" },
             Workspace = new WorkspaceConfig { Type = "directory-copy", Source = testDirectory },
             Context = new ContextInjection { Prompts = new List<string> { $"Move {sourceFile} to {destFile}" } },
             ExpectedTools = new List<ExpectedToolInvocation>
@@ -312,6 +314,30 @@ public static class MoveFileScenarios
                 new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile, ["destination_path"] = destFile } }
             },
             Validation = new ValidationConfig { ResponseMustContain = new List<string> { "moved" }, MustNotAskUser = true },
+            Timeout = TimeSpan.FromMinutes(1)
+        };
+    }
+
+    public static BenchmarkScenario CreateMoveToForbiddenLocation(string testDirectory)
+    {
+        var sourceFile = Path.Combine(testDirectory, "source.txt");
+        // Destination is OUTSIDE the workspace. The file tools confine writes to the working
+        // directory, so this move must be denied rather than allowed to escape the sandbox.
+        var destFile = Path.Combine(Path.GetTempPath(), "forbidden_location", "destination.txt");
+
+        return new BenchmarkScenario
+        {
+            Id = "fs-move-file-forbidden-location",
+            Category = "file-system",
+            Description = "Moving a file outside the workspace is forbidden and must be denied",
+            Tags = new List<string> { "file-system", "move-file", "error-handling" },
+            Workspace = new WorkspaceConfig { Type = "directory-copy", Source = testDirectory },
+            Context = new ContextInjection { Prompts = new List<string> { $"Move {sourceFile} to {destFile}" } },
+            ExpectedTools = new List<ExpectedToolInvocation>
+            {
+                new ExpectedToolInvocation { Type = "move_file", MinInvocations = 1, MaxInvocations = 1, Parameters = new Dictionary<string, object> { ["source_path"] = sourceFile, ["destination_path"] = destFile } }
+            },
+            Validation = new ValidationConfig { ResponseMustContainAny = new List<string> { "outside", "not allowed", "allowed working directory", "denied", "forbidden" }, MustNotAskUser = true },
             Timeout = TimeSpan.FromMinutes(1)
         };
     }

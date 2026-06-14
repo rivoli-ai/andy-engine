@@ -217,24 +217,43 @@ public class MoveFileTests : FileSystemIntegrationTestBase
 
     [Theory]
     [LlmTestData]
-    public async Task MoveFile_CrossVolume_Success(LlmMode mode)
+    public async Task MoveFile_ToApprovedLocation_Success(LlmMode mode)
     {
         // Arrange
         CreateTestFile("source.txt", "Content");
-        var scenario = MoveFileScenarios.CreateCrossVolumeMove(TestDirectory);
+        var scenario = MoveFileScenarios.CreateMoveToApprovedLocation(TestDirectory);
 
         // Act
         var result = await RunAsync(scenario, mode);
 
-        // Assert
+        // Assert: a destination inside the workspace is approved, so the move succeeds.
         AssertBenchmarkSuccess(result, scenario);
-        var sourceFile = Path.Combine(TestDirectory, "source.txt");
-        Assert.False(File.Exists(sourceFile));
+        Assert.False(File.Exists(Path.Combine(TestDirectory, "source.txt")));
+        Assert.True(File.Exists(Path.Combine(TestDirectory, "approved_destination.txt")));
+    }
 
-        // Cleanup cross-volume destination
-        var destFile = Path.Combine(Path.GetTempPath(), "cross_volume_test", "destination.txt");
-        if (File.Exists(destFile)) File.Delete(destFile);
-        var destDir = Path.GetDirectoryName(destFile);
+    [Theory]
+    [LlmTestData]
+    public async Task MoveFile_ToForbiddenLocation_Fails(LlmMode mode)
+    {
+        // Arrange
+        CreateTestFile("source.txt", "Content");
+        var scenario = MoveFileScenarios.CreateMoveToForbiddenLocation(TestDirectory);
+
+        // Act
+        var result = await RunAsync(scenario, mode);
+
+        // Assert: the destination is outside the workspace, so the move must be denied.
+        AssertBenchmarkSuccess(result, scenario);
+
+        // Source stays put (the move was refused) and nothing escaped the workspace.
+        Assert.True(File.Exists(Path.Combine(TestDirectory, "source.txt")));
+        var forbiddenDest = Path.Combine(Path.GetTempPath(), "forbidden_location", "destination.txt");
+        Assert.False(File.Exists(forbiddenDest));
+
+        // Best-effort cleanup in case a regression let the file escape.
+        if (File.Exists(forbiddenDest)) File.Delete(forbiddenDest);
+        var destDir = Path.GetDirectoryName(forbiddenDest);
         if (destDir != null && Directory.Exists(destDir)) Directory.Delete(destDir, true);
     }
 
