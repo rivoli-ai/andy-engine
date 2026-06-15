@@ -580,6 +580,11 @@ public class SimpleAgent : IDisposable
         Content = m.Content ?? string.Empty,
         Timestamp = m.Timestamp,
         Id = string.IsNullOrEmpty(m.Id) ? Guid.NewGuid().ToString() : m.Id,
+        // Always emit non-null collections. The Message model defaults these to new() and
+        // consumers (Message.Parts, provider request builders such as OpenRouterProvider.
+        // ConvertMessage) dereference .Count without null-guarding. Emitting null here breaks
+        // that invariant and caused a NullReferenceException on any follow-up turn whose
+        // compressed context contained a message without tool calls/results.
         ToolCalls = m.ToolCalls is { Count: > 0 }
             ? m.ToolCalls.Select(tc => new Andy.Model.Model.ToolCall
             {
@@ -587,7 +592,7 @@ public class SimpleAgent : IDisposable
                 Name = tc.Name,
                 ArgumentsJson = tc.ArgumentsJson,
             }).ToList()
-            : null,
+            : new List<Andy.Model.Model.ToolCall>(),
         ToolResults = m.ToolResults is { Count: > 0 }
             ? m.ToolResults.Select(tr => new Andy.Model.Model.ToolResult
             {
@@ -596,7 +601,7 @@ public class SimpleAgent : IDisposable
                 IsError = tr.IsError,
                 ResultJson = tr.ResultJson,
             }).ToList()
-            : null,
+            : new List<Andy.Model.Model.ToolResult>(),
     };
 
     private IReadOnlyList<ToolDeclaration> BuildToolDeclarations()
