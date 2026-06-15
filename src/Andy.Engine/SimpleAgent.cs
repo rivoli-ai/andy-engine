@@ -113,6 +113,8 @@ public class SimpleAgent : IDisposable
         // final answer. Used at max-turns to avoid recording that already-interleaved message
         // a second time as Turn.AssistantMessage.
         var lastAssistantWasInterleaved = false;
+        // Whether the one-time "you're approaching the turn budget, wrap up" nudge has been sent.
+        var wrapUpNudgeSent = false;
 
         var turnCount = 0;
         var startTime = DateTime.UtcNow;
@@ -123,6 +125,30 @@ public class SimpleAgent : IDisposable
             {
                 turnCount++;
                 _logger?.LogDebug("Turn {TurnCount}/{MaxTurns}", turnCount, _maxTurns);
+
+                // As we approach the turn budget, nudge the model once to wrap up and stop
+                // exploring. This often lets it produce a final answer before the hard limit,
+                // avoiding a "max turns exceeded" stop. Mirrors the output-truncation nudge: the
+                // message is added to both the in-flight request and the interleaved log so the
+                // persisted turn faithfully reflects what was sent.
+                if (!wrapUpNudgeSent && ShouldSendWrapUpNudge(turnCount, _maxTurns))
+                {
+                    _logger?.LogInformation(
+                        "Approaching turn budget ({TurnCount}/{MaxTurns}); nudging the model to wrap up.",
+                        turnCount, _maxTurns);
+
+                    var wrapUp = new Message
+                    {
+                        Role = Role.User,
+                        Content = $"You are on turn {turnCount} of a maximum {_maxTurns} tool-call turns. "
+                                + "Stop exploring and produce your final answer now, making only the "
+                                + "essential remaining tool calls. If you cannot fully finish, summarize "
+                                + "what you have changed and what still remains.",
+                    };
+                    inFlightMessages.Add(wrapUp);
+                    allInterleavedMessages.Add(wrapUp);
+                    wrapUpNudgeSent = true;
+                }
 
                 // Build tool declarations from registry
                 var toolDeclarations = BuildToolDeclarations();
@@ -283,48 +309,24 @@ public class SimpleAgent : IDisposable
 
             _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
 
-            // Build conversation history for debugging
-            var allConversationMessages = _conversationManager.Conversation.ToChronoMessages().ToList();
-            var historyBuilder = new System.Text.StringBuilder();
-            historyBuilder.AppendLine($"Reached maximum turn count ({_maxTurns})");
-            historyBuilder.AppendLine("Conversation history (FULL - no truncation):");
-            historyBuilder.AppendLine("=".PadRight(80, '='));
-            for (int i = 0; i < allConversationMessages.Count; i++)
+            // Log the full conversation for debugging, but DO NOT return it as the response.
+            // Previously the entire history — every raw tool-result payload, embedded CRLFs and all —
+            // was packed into Response, and callers (e.g. the CLI feed) rendered it verbatim, flooding
+            // the UI with tool JSON. The detail stays in the logs; callers get a concise message.
+            if (_logger?.IsEnabled(LogLevel.Warning) == true)
             {
-                var msg = allConversationMessages[i];
-                var content = msg.Content ?? "(empty)";
-                historyBuilder.AppendLine($"\n[{i}] Role: {msg.Role}");
-                historyBuilder.AppendLine($"Content: {content}");
-                historyBuilder.AppendLine($"ToolCalls Count: {msg.ToolCalls?.Count ?? 0}");
-
-                if (msg.ToolCalls != null && msg.ToolCalls.Count > 0)
+                var allConversationMessages = _conversationManager.Conversation.ToChronoMessages().ToList();
+                for (int i = 0; i < allConversationMessages.Count; i++)
                 {
-                    foreach (var toolCall in msg.ToolCalls)
-                    {
-                        historyBuilder.AppendLine($"  - Tool: {toolCall.Name}");
-                        historyBuilder.AppendLine($"    ID: {toolCall.Id}");
-                        historyBuilder.AppendLine($"    Arguments: {toolCall.ArgumentsJson}");
-                    }
+                    var msg = allConversationMessages[i];
+                    _logger.LogWarning("  [{Index}] {Role}: {Content} (ToolCalls: {ToolCallCount})",
+                        i, msg.Role, msg.Content ?? "(empty)", msg.ToolCalls?.Count ?? 0);
                 }
-
-                if (msg.ToolResults != null && msg.ToolResults.Count > 0)
-                {
-                    foreach (var toolResult in msg.ToolResults)
-                    {
-                        historyBuilder.AppendLine($"  - ToolResult: {toolResult.Name} (CallId: {toolResult.CallId}, IsError: {toolResult.IsError})");
-                    }
-                }
-                historyBuilder.AppendLine("-".PadRight(80, '-'));
-
-                // Also log to logger with full content
-                _logger?.LogWarning("  [{Index}] {Role}: {Content} (ToolCalls: {ToolCallCount})",
-                    i, msg.Role, content, msg.ToolCalls?.Count ?? 0);
             }
-            historyBuilder.AppendLine("=".PadRight(80, '='));
 
             return new SimpleAgentResult(
                 Success: false,
-                Response: historyBuilder.ToString(),
+                Response: $"Reached the maximum of {_maxTurns} tool-call turns before completing the request.",
                 TurnCount: turnCount,
                 Duration: DateTime.UtcNow - startTime,
                 StopReason: "max_turns_exceeded"
@@ -709,6 +711,18 @@ public class SimpleAgent : IDisposable
         finishReason is not null &&
         (finishReason.Equals("length", StringComparison.OrdinalIgnoreCase) ||
          finishReason.Equals("max_tokens", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether to emit the one-time "wrap up" nudge on the current turn: once the agent has used
+    /// roughly 80% of its turn budget. Skipped for very small budgets (&lt; 3) where there is no
+    /// room for a nudge to help before the hard limit.
+    /// </summary>
+    internal static bool ShouldSendWrapUpNudge(int turnCount, int maxTurns)
+    {
+        if (maxTurns < 3) return false;
+        var threshold = (int)Math.Ceiling(maxTurns * 0.8);
+        return turnCount >= threshold;
+    }
 
     private Dictionary<string, object?> ParseToolArguments(string argumentsJson)
     {
