@@ -18,6 +18,8 @@
     </PackageReference>
     <PackageReference Include="Moq" Version="4.20.69" />
     <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <!-- Test-only: drive the real dataframe_* tools through SimpleAgent for an end-to-end scenario. -->
+    <PackageReference Include="Andy.Tools.Data" Version="2026.6.16-rc.69" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
   </ItemGroup>
