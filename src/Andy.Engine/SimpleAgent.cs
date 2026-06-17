@@ -764,17 +764,7 @@ public class SimpleAgent : IDisposable
 
             foreach (var property in root.EnumerateObject())
             {
-                args[property.Name] = property.Value.ValueKind switch
-                {
-                    JsonValueKind.String => property.Value.GetString(),
-                    JsonValueKind.Number => property.Value.GetDouble(),
-                    JsonValueKind.True => true,
-                    JsonValueKind.False => false,
-                    JsonValueKind.Null => null,
-                    JsonValueKind.Object => property.Value.GetRawText(),
-                    JsonValueKind.Array => DeserializeArray(property.Value),
-                    _ => property.Value.GetRawText()
-                };
+                args[property.Name] = ConvertElement(property.Value);
             }
             return true;
         }
@@ -831,33 +821,47 @@ public class SimpleAgent : IDisposable
     private static readonly System.Text.RegularExpressions.Regex TrailingCommaRegex =
         new(@",(\s*[}\]])", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    // Recursively converts a JSON element to a plain CLR value: objects become
+    // Dictionary<string, object?>, arrays become string[]/object?[], scalars become their CLR type.
+    // Preserving nested structure is what lets tools with object/array parameters — e.g. the
+    // dataframe_* tools' 'predicate', 'aggregations', 'expression' — receive real dictionaries and
+    // lists instead of raw JSON text (which the tools reject as "must be an object").
+    private static object? ConvertElement(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number => element.GetDouble(),
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.Null => null,
+        JsonValueKind.Object => DeserializeObject(element),
+        JsonValueKind.Array => DeserializeArray(element),
+        _ => element.GetRawText()
+    };
+
+    private static Dictionary<string, object?> DeserializeObject(JsonElement objectElement)
+    {
+        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var property in objectElement.EnumerateObject())
+        {
+            result[property.Name] = ConvertElement(property.Value);
+        }
+        return result;
+    }
+
     private static object DeserializeArray(JsonElement arrayElement)
     {
-        // Try to deserialize as string array first (most common case)
-        var items = new List<object>();
+        var items = new List<object?>();
         foreach (var item in arrayElement.EnumerateArray())
         {
-            items.Add(item.ValueKind switch
-            {
-                JsonValueKind.String => item.GetString() ?? string.Empty,
-                JsonValueKind.Number => item.GetDouble(),
-                JsonValueKind.True => true,
-                JsonValueKind.False => false,
-                JsonValueKind.Null => null!,
-                JsonValueKind.Object => item.GetRawText(),
-                JsonValueKind.Array => DeserializeArray(item),
-                _ => item.GetRawText()
-            });
+            items.Add(ConvertElement(item));
         }
 
-        // If all items are strings, return as string array
-        if (items.All(x => x is string))
-        {
-            return items.Cast<string>().ToArray();
-        }
-
-        // Otherwise return as object array
-        return items.ToArray();
+        // Keep a string[] when every element is a string (back-compat for string-array params like
+        // group_by / columns); otherwise return object?[], preserving nested dictionaries so arrays
+        // of objects (aggregations, sort keys, expectations, window functions) survive intact.
+        return items.All(x => x is string)
+            ? items.Cast<string>().ToArray()
+            : items.ToArray();
     }
 
     public void Dispose()
