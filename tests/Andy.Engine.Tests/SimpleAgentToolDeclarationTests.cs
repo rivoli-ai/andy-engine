@@ -107,4 +107,31 @@ public class SimpleAgentToolDeclarationTests
         var items = Assert.IsAssignableFrom<IDictionary<string, object>>(columns["items"]);
         Assert.Equal("string", items["type"]);
     }
+
+    [Fact]
+    public async Task ExtraBody_flows_through_to_the_llm_request()
+    {
+        var registry = new Mock<IToolRegistry>();
+        registry.Setup(r => r.Tools).Returns(new List<ToolRegistration>());
+
+        // OpenRouter-style provider routing supplied at the engine boundary.
+        var routing = new Dictionary<string, object?>
+        {
+            ["provider"] = new Dictionary<string, object?>
+            {
+                ["order"] = new[] { "deepinfra/turbo" },
+                ["allow_fallbacks"] = false
+            }
+        };
+
+        var requests = new List<LlmRequest>();
+        var agent = new SimpleAgent(
+            FinishingProvider(requests).Object, registry.Object, NoopExecutor(),
+            systemPrompt: "system", maxTurns: 5, extraBody: routing);
+
+        await agent.ProcessMessageAsync("hi");
+
+        // The dictionary the caller passed reaches LlmRequest.ExtraBody unchanged.
+        Assert.Same(routing, Assert.Single(requests).ExtraBody);
+    }
 }

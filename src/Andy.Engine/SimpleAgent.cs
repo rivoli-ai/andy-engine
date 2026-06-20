@@ -32,6 +32,7 @@ public class SimpleAgent : IDisposable
     private readonly IContextCompressor _contextCompressor;
     private readonly bool _enablePromptCaching;
     private readonly string _workingDirectory;
+    private readonly IReadOnlyDictionary<string, object?>? _extraBody;
     private IConversationManager _conversationManager;
 
     public SimpleAgent(
@@ -47,7 +48,8 @@ public class SimpleAgent : IDisposable
         int maxToolResultChars = 16000,
         int maxContextTokens = 120_000,
         IContextCompressor? contextCompressor = null,
-        bool enablePromptCaching = true)
+        bool enablePromptCaching = true,
+        IReadOnlyDictionary<string, object?>? extraBody = null)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -59,6 +61,7 @@ public class SimpleAgent : IDisposable
         _maxContextTokens = maxContextTokens > 0 ? maxContextTokens : 120_000;
         _contextCompressor = contextCompressor ?? new SmartCompressor();
         _enablePromptCaching = enablePromptCaching;
+        _extraBody = extraBody;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _conversationManager = conversationManager ?? new DefaultConversationManager();
@@ -164,6 +167,9 @@ public class SimpleAgent : IDisposable
                     // OpenAI/DeepSeek; emits an Anthropic cache_control breakpoint). The system
                     // prompt is byte-stable for the agent's lifetime, unlike the compacted history.
                     CacheSystemPrompt = _enablePromptCaching,
+                    // Provider-specific request fields (e.g. OpenRouter `provider` routing), passed
+                    // straight through to the LLM provider that knows how to serialize them.
+                    ExtraBody = _extraBody,
                     Config = new LlmClientConfig
                     {
                         // Temperature defaults to null, allowing models to use their own defaults
