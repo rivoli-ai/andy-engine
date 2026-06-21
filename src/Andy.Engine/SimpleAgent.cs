@@ -383,6 +383,39 @@ public class SimpleAgent : IDisposable
     /// others), but <see cref="OperationCanceledException"/> is rethrown so a cancellation
     /// cancels the whole run rather than being masked as a tool error.
     /// </summary>
+    /// <summary>
+    /// True when the named tool declares its own timeout parameter (a parameter whose name contains
+    /// "timeout", e.g. execute_command's <c>timeout_seconds</c>). Such tools enforce their own
+    /// execution limit, so the engine must not impose its default execution-time cap on top - that
+    /// would override the tool's timeout and kill legitimate long-running work.
+    /// </summary>
+    private bool ToolDeclaresOwnTimeout(string toolName)
+    {
+        try
+        {
+            var parameters = _toolRegistry.GetTool(toolName)?.Metadata?.Parameters;
+            if (parameters == null)
+            {
+                return false;
+            }
+
+            foreach (var p in parameters)
+            {
+                if (!string.IsNullOrEmpty(p.Name) &&
+                    p.Name.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private async Task<Message> ExecuteToolCallAsync(Andy.Model.Model.ToolCall toolCall, CancellationToken cancellationToken)
     {
         _logger?.LogDebug("Executing tool: {ToolName}", toolCall.Name);
@@ -400,6 +433,21 @@ public class SimpleAgent : IDisposable
             // Parse tool arguments
             var args = ParseToolArguments(toolCall.ArgumentsJson);
 
+            // The default 100MB memory cap is measured process-wide and is exceeded by the .NET
+            // runtime alone, producing spurious "resource limit exceeded" warnings on ordinary
+            // file ops - so raise it.
+            var resourceLimits = new ToolResourceLimits { MaxMemoryBytes = 2L * 1024 * 1024 * 1024 };
+
+            // The framework also imposes a default 30s execution-time cap. Only keep it for tools
+            // that do NOT manage their own timeout. A tool that declares a timeout parameter (e.g.
+            // execute_command's timeout_seconds) enforces its own limit; layering the engine's 30s
+            // cap on top would override it and kill legitimate long-running work (builds, test runs,
+            // indexing). For those tools, leave the cap unbounded so the tool's own timeout governs.
+            if (ToolDeclaresOwnTimeout(toolCall.Name))
+            {
+                resourceLimits.MaxExecutionTimeMs = 0; // unbounded - the tool enforces its own timeout
+            }
+
             // Execute tool
             var toolResult = await _toolExecutor.ExecuteAsync(
                 toolCall.Name,
@@ -409,10 +457,7 @@ public class SimpleAgent : IDisposable
                     WorkingDirectory = _workingDirectory,
                     Environment = new Dictionary<string, string>(),
                     CancellationToken = cancellationToken,
-                    // The default 100MB cap is measured process-wide and is
-                    // exceeded by the .NET runtime alone, producing spurious
-                    // "resource limit exceeded" warnings on ordinary file ops.
-                    ResourceLimits = new ToolResourceLimits { MaxMemoryBytes = 2L * 1024 * 1024 * 1024 }
+                    ResourceLimits = resourceLimits
                 }
             );
 
