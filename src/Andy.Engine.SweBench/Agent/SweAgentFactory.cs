@@ -105,6 +105,10 @@ public sealed class SweAgentFactory : ISweAgentFactory
             options.DefaultPermissions.NetworkAccess = false;
         });
 
+        // Read-only PDF document tools (pdf_*) over the managed Andy.Doc engine. They require only
+        // filesystem-read, so they operate within the workspace-scoped permissions above.
+        Andy.Tools.Pdf.ServiceCollectionExtensions.AddAndyPdfTools(services);
+
         var provider = services.BuildServiceProvider();
 
         var lifecycle = provider.GetRequiredService<IToolLifecycleManager>();
