@@ -228,8 +228,10 @@ public class PluggableAgentTests
     [Fact]
     public void AndyAgent_WithSkillsDir_RegistersSkillTool()
     {
-        // End-to-end: building the andy agent with --skills-dir gives it the `skill` tool.
-        // Offline — no LLM call, no Docker.
+        // End-to-end: building the andy agent with --skills-dir gives it the `skill` tool. No LLM
+        // call or Docker, but Create builds the LLM provider (which needs an API key to construct),
+        // so this runs only when a key is present (e.g. locally); CI without a key skips it.
+        if (string.IsNullOrEmpty(SweAgentFactory.ApiKey)) return;
         var skillsDir = Directory.CreateTempSubdirectory("swe-skills-").FullName;
         var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
         try
@@ -256,6 +258,7 @@ public class PluggableAgentTests
     [Fact]
     public void AndyAgent_WithoutSkillsDir_HasNoSkillTool()
     {
+        if (string.IsNullOrEmpty(SweAgentFactory.ApiKey)) return;
         var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
         try
         {
