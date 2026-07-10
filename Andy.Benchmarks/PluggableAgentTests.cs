@@ -208,9 +208,63 @@ public class PluggableAgentTests
     public void Cli_ParsesPromptFlags()
     {
         var ctx = SweBenchCliOptions.Parse(
-            new[] { "--dataset", "d.jsonl", "--system-prompt-file", "p.md", "--rules-dir", "rules" }, "run-x");
+            new[]
+            {
+                "--dataset", "d.jsonl", "--system-prompt-file", "p.md", "--rules-dir", "rules",
+                "--skills-dir", "skills",
+            }, "run-x");
         Assert.Equal("p.md", ctx.SystemPromptFile);
         Assert.Equal("rules", ctx.RulesDir);
+        Assert.Equal("skills", ctx.SkillsDir);
+    }
+
+    [Fact]
+    public void Cli_NoSkillsDir_IsNull()
+    {
+        var ctx = SweBenchCliOptions.Parse(new[] { "--dataset", "d.jsonl" }, "run-x");
+        Assert.Null(ctx.SkillsDir);
+    }
+
+    [Fact]
+    public void AndyAgent_WithSkillsDir_RegistersSkillTool()
+    {
+        // End-to-end: building the andy agent with --skills-dir gives it the `skill` tool.
+        // Offline — no LLM call, no Docker.
+        var skillsDir = Directory.CreateTempSubdirectory("swe-skills-").FullName;
+        var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
+        try
+        {
+            var skill = Path.Combine(skillsDir, "pdf-forms");
+            Directory.CreateDirectory(skill);
+            File.WriteAllText(
+                Path.Combine(skill, "SKILL.md"),
+                "---\nname: pdf-forms\ndescription: Fill and extract PDF forms.\n---\n# body\n");
+
+            var ctx = SweBenchCliOptions.Parse(
+                new[] { "--dataset", "d.jsonl", "--skills-dir", skillsDir }, "run-x");
+            using var agent = new SweAgentFactory(ctx).Create(ws, Inst());
+
+            Assert.Contains("skill", agent.AvailableTools);
+        }
+        finally
+        {
+            Directory.Delete(skillsDir, recursive: true);
+            Directory.Delete(ws, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AndyAgent_WithoutSkillsDir_HasNoSkillTool()
+    {
+        var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
+        try
+        {
+            var ctx = SweBenchCliOptions.Parse(new[] { "--dataset", "d.jsonl" }, "run-x");
+            using var agent = new SweAgentFactory(ctx).Create(ws, Inst());
+
+            Assert.DoesNotContain("skill", agent.AvailableTools);
+        }
+        finally { Directory.Delete(ws, recursive: true); }
     }
 }
 
@@ -302,6 +356,34 @@ public class SwePromptConfigTests
             Assert.DoesNotContain("Repository-specific rules", prompt);
         }
         finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    private static Andy.Skills.Skill MakeSkill(string name, string description) => new()
+    {
+        Name = name,
+        Description = description,
+        DirectoryPath = $"/s/{name}",
+        ManifestPath = $"/s/{name}/SKILL.md",
+        BodyOffset = 0,
+    };
+
+    [Fact]
+    public void AppendSkillsBlock_ListsSkills_AndPointsAtTool()
+    {
+        var prompt = SwePromptConfig.AppendSkillsBlock(
+            "Base prompt.",
+            [MakeSkill("pdf-forms", "Fill and extract PDF forms."), MakeSkill("react-review", "Review React code.")]);
+
+        Assert.StartsWith("Base prompt.", prompt);
+        Assert.Contains("call the `skill` tool", prompt);
+        Assert.Contains("pdf-forms: Fill and extract PDF forms.", prompt);
+        Assert.Contains("react-review: Review React code.", prompt);
+    }
+
+    [Fact]
+    public void AppendSkillsBlock_NoSkills_ReturnsPromptUnchanged()
+    {
+        Assert.Equal("Base prompt.", SwePromptConfig.AppendSkillsBlock("Base prompt.", []));
     }
 
     [Fact]

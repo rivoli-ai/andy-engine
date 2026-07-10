@@ -64,6 +64,14 @@ public sealed class RunContext
     /// </summary>
     public string? RulesDir { get; init; }
 
+    /// <summary>
+    /// (andy agent) Directory of Agent Skills (each <c>&lt;skill&gt;/SKILL.md</c>). When set, the
+    /// agent gets a <c>skill</c> tool and the skills' one-line summaries are appended to the system
+    /// prompt (lazy disclosure). This is the "with-skills" arm of the no-skills-vs-skills study.
+    /// Null = no skills.
+    /// </summary>
+    public string? SkillsDir { get; init; }
+
     // ---- Model / provider (agent stage) ----
     // Free, tool-capable OpenRouter model (Qwen free was retired). Kimi
     // (moonshotai/kimi-k2.6:free) is a stronger coding alternative via --model.

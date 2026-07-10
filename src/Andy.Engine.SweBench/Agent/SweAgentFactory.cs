@@ -130,6 +130,23 @@ public sealed class SweAgentFactory : ISweAgentFactory
             registry.SetToolEnabled(runTests.Metadata.Id, true);
         }
 
+        // Optional Agent Skills: a `skill` tool the agent calls to load a skill's body on demand.
+        // Registered as an instance (like RunTestsTool) because SkillTool has a constructor
+        // dependency (ISkillCatalog) the registry's type-based instantiation can't satisfy. The tool
+        // reads SKILL.md directly (not via the workspace-scoped file tools), so the skills dir may
+        // live outside the workspace.
+        Andy.Skills.Tools.ISkillCatalog? skillCatalog = null;
+        if (!string.IsNullOrWhiteSpace(_ctx.SkillsDir))
+        {
+            var options = new Andy.Skills.Tools.SkillCatalogOptions();
+            options.Roots.Add(_ctx.SkillsDir!);
+            skillCatalog = new Andy.Skills.Tools.SkillCatalog(options);
+
+            var skillTool = new Andy.Skills.Tools.SkillTool(skillCatalog);
+            registry.RegisterTool(skillTool.Metadata, _ => skillTool, new Dictionary<string, object>());
+            registry.SetToolEnabled(skillTool.Metadata.Id, true);
+        }
+
         var factory = provider.GetRequiredService<ILlmProviderFactory>();
         var rawProvider = factory.CreateProvider("openrouter");
         var policy = new RateLimitPolicy
@@ -140,11 +157,18 @@ public sealed class SweAgentFactory : ISweAgentFactory
         var llm = new RateLimitingLlmProvider(
             rawProvider, policy, provider.GetService<ILoggerFactory>()?.CreateLogger("swebench.llm"));
 
+        var systemPrompt = _prompt.Build(workspaceDir, instance.Repo);
+        if (skillCatalog is not null)
+        {
+            var skills = skillCatalog.GetSkillsAsync().GetAwaiter().GetResult();
+            systemPrompt = SwePromptConfig.AppendSkillsBlock(systemPrompt, skills);
+        }
+
         var agent = new SimpleAgent(
             llm,
             registry,
             executor,
-            systemPrompt: _prompt.Build(workspaceDir, instance.Repo),
+            systemPrompt: systemPrompt,
             maxTurns: _ctx.MaxTurns,
             workingDirectory: workspaceDir,
             logger: provider.GetService<ILoggerFactory>()?.CreateLogger<SimpleAgent>(),

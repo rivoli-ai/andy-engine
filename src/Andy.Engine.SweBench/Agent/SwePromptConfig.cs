@@ -78,6 +78,26 @@ public sealed class SwePromptConfig
             + "\n--- End repository-specific rules ---";
     }
 
+    /// <summary>
+    /// The system-prompt header for the skills block. Points the agent at the <c>skill</c> tool
+    /// (registered by <c>AddAndySkills</c>) rather than at the raw SKILL.md path, since skill files
+    /// live outside the workspace-scoped file permissions.
+    /// </summary>
+    internal const string SkillsHeader =
+        "## Skills\n" +
+        "The following skills are available. When one is relevant to the task, call the `skill` " +
+        "tool with its name to load its full instructions, then follow them.";
+
+    /// <summary>
+    /// Appends the lazy-disclosure skills block (one line per skill) to <paramref name="prompt"/>.
+    /// Returns the prompt unchanged when there are no skills.
+    /// </summary>
+    public static string AppendSkillsBlock(string prompt, IReadOnlyList<Andy.Skills.Skill> skills)
+    {
+        var block = Andy.Skills.SkillPromptComposer.Compose(skills, SkillsHeader);
+        return block.Length == 0 ? prompt : prompt.TrimEnd() + "\n\n" + block;
+    }
+
     private string? LookupRules(string repo)
     {
         // Accept either the bare-repo key "django__django" or the short key "django".
