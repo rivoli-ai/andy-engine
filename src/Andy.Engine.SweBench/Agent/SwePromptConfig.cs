@@ -91,11 +91,26 @@ public sealed class SwePromptConfig
     /// <summary>
     /// Appends the lazy-disclosure skills block (one line per skill) to <paramref name="prompt"/>.
     /// Returns the prompt unchanged when there are no skills.
+    ///
+    /// The block carries only each skill's NAME and DESCRIPTION — never its <c>SKILL.md</c> path or
+    /// any host filesystem location. Skill files live outside the workspace-scoped file permissions,
+    /// so a path here would only invite denied <c>read_file</c> calls; the agent loads a skill by
+    /// calling the <c>skill</c> tool with its name (see <see cref="SkillsHeader"/>). We compose the
+    /// block here rather than via <c>Andy.Skills.SkillPromptComposer</c> precisely because that
+    /// composer appends the manifest path.
     /// </summary>
     public static string AppendSkillsBlock(string prompt, IReadOnlyList<Andy.Skills.Skill> skills)
     {
-        var block = Andy.Skills.SkillPromptComposer.Compose(skills, SkillsHeader);
-        return block.Length == 0 ? prompt : prompt.TrimEnd() + "\n\n" + block;
+        if (skills.Count == 0)
+            return prompt;
+
+        var sb = new StringBuilder();
+        sb.AppendLine(SkillsHeader);
+        sb.AppendLine();
+        foreach (var skill in skills)
+            sb.AppendLine($"- {skill.Name}: {skill.Description}");
+
+        return prompt.TrimEnd() + "\n\n" + sb.ToString().TrimEnd() + "\n";
     }
 
     private string? LookupRules(string repo)

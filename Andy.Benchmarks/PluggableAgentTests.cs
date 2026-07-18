@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Andy.Engine.SweBench.Agent;
 using Andy.Engine.SweBench.Model;
 using Andy.Engine.SweBench.Orchestration;
+using Andy.Tools.Core;
 using Xunit;
 
 namespace Andy.Benchmarks;
@@ -225,28 +226,37 @@ public class PluggableAgentTests
         Assert.Null(ctx.SkillsDir);
     }
 
-    [Fact]
-    public void AndyAgent_WithSkillsDir_RegistersSkillTool()
+    /// <summary>Writes a minimal valid SKILL.md and returns the skills-root dir.</summary>
+    private static string MakeSkillsDir(string name = "pdf-forms", string description = "Fill and extract PDF forms.", string body = "# body\n")
     {
-        // End-to-end: building the andy agent with --skills-dir gives it the `skill` tool. No LLM
-        // call or Docker, but Create builds the LLM provider (which needs an API key to construct),
-        // so this runs only when a key is present (e.g. locally); CI without a key skips it.
-        if (string.IsNullOrEmpty(SweAgentFactory.ApiKey)) return;
         var skillsDir = Directory.CreateTempSubdirectory("swe-skills-").FullName;
+        var skill = Path.Combine(skillsDir, name);
+        Directory.CreateDirectory(skill);
+        File.WriteAllText(
+            Path.Combine(skill, "SKILL.md"),
+            $"---\nname: {name}\ndescription: {description}\n---\n{body}");
+        return skillsDir;
+    }
+
+    [Fact]
+    public void AndyAgent_WithSkillsDir_RegistersSkillTools()
+    {
+        // Composition + skill registration, exercised WITHOUT an API key or network: BuildToolStack
+        // builds the tool registry but not the LLM provider. CI (no key) runs this and fails if
+        // --skills-dir ever stops registering the tools.
+        var skillsDir = MakeSkillsDir();
         var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
         try
         {
-            var skill = Path.Combine(skillsDir, "pdf-forms");
-            Directory.CreateDirectory(skill);
-            File.WriteAllText(
-                Path.Combine(skill, "SKILL.md"),
-                "---\nname: pdf-forms\ndescription: Fill and extract PDF forms.\n---\n# body\n");
-
             var ctx = SweBenchCliOptions.Parse(
                 new[] { "--dataset", "d.jsonl", "--skills-dir", skillsDir }, "run-x");
-            using var agent = new SweAgentFactory(ctx).Create(ws, Inst());
-
-            Assert.Contains("skill", agent.AvailableTools);
+            var stack = new SweAgentFactory(ctx).BuildToolStack(ws, Inst());
+            try
+            {
+                Assert.Contains("skill", stack.AvailableTools);
+                Assert.Contains("skill_file", stack.AvailableTools);
+            }
+            finally { stack.Services.Dispose(); }
         }
         finally
         {
@@ -256,19 +266,84 @@ public class PluggableAgentTests
     }
 
     [Fact]
-    public void AndyAgent_WithoutSkillsDir_HasNoSkillTool()
+    public async Task AndyAgent_WithSkillsDir_SkillTool_LoadsBodyThroughExecutor()
     {
-        if (string.IsNullOrEmpty(SweAgentFactory.ApiKey)) return;
+        // The registered `skill` tool loads a real temporary SKILL.md body via the executor — no
+        // provider, no network.
+        var skillsDir = MakeSkillsDir(body: "# PDF Forms\nStep 1. Do the thing.\n");
+        var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
+        try
+        {
+            var ctx = SweBenchCliOptions.Parse(
+                new[] { "--dataset", "d.jsonl", "--skills-dir", skillsDir }, "run-x");
+            var stack = new SweAgentFactory(ctx).BuildToolStack(ws, Inst());
+            try
+            {
+                var result = await stack.Executor.ExecuteAsync(
+                    "skill",
+                    new Dictionary<string, object?> { ["name"] = "pdf-forms" },
+                    new ToolExecutionContext { WorkingDirectory = ws });
+
+                Assert.True(result.IsSuccessful, result.ErrorMessage);
+                Assert.Contains("Step 1. Do the thing.", ContentOf(result));
+            }
+            finally { stack.Services.Dispose(); }
+        }
+        finally
+        {
+            Directory.Delete(skillsDir, recursive: true);
+            Directory.Delete(ws, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AndyAgent_WithoutSkillsDir_HasNoSkillTools()
+    {
         var ws = Directory.CreateTempSubdirectory("swe-ws-").FullName;
         try
         {
             var ctx = SweBenchCliOptions.Parse(new[] { "--dataset", "d.jsonl" }, "run-x");
-            using var agent = new SweAgentFactory(ctx).Create(ws, Inst());
-
-            Assert.DoesNotContain("skill", agent.AvailableTools);
+            var stack = new SweAgentFactory(ctx).BuildToolStack(ws, Inst());
+            try
+            {
+                Assert.DoesNotContain("skill", stack.AvailableTools);
+                Assert.DoesNotContain("skill_file", stack.AvailableTools);
+            }
+            finally { stack.Services.Dispose(); }
         }
         finally { Directory.Delete(ws, recursive: true); }
     }
+
+    [Fact]
+    public void AndyAgent_MissingSkillsDir_FailsFast()
+    {
+        // An invalid --skills-dir must fail at factory construction, before any instance work.
+        var ctx = SweBenchCliOptions.Parse(
+            new[] { "--dataset", "d.jsonl", "--skills-dir", "/no/such/skills/dir" }, "run-x");
+        var ex = Assert.Throws<ArgumentException>(() => new SweAgentFactory(ctx));
+        Assert.Contains("skills-dir", ex.Message);
+    }
+
+    [Fact]
+    public void AndyAgent_EmptySkillsDir_FailsFast()
+    {
+        // A directory with zero usable skills cannot silently run as the with-skills arm.
+        var empty = Directory.CreateTempSubdirectory("swe-skills-empty-").FullName;
+        try
+        {
+            var ctx = SweBenchCliOptions.Parse(
+                new[] { "--dataset", "d.jsonl", "--skills-dir", empty }, "run-x");
+            var ex = Assert.Throws<ArgumentException>(() => new SweAgentFactory(ctx));
+            Assert.Contains("no usable skills", ex.Message);
+        }
+        finally { Directory.Delete(empty, recursive: true); }
+    }
+
+    /// <summary>Extracts the text body from a <c>TextSuccess</c> tool result.</summary>
+    private static string ContentOf(Andy.Tools.Core.ToolResult result) =>
+        result.Data is IDictionary<string, object?> d && d.TryGetValue("content", out var c)
+            ? c?.ToString() ?? string.Empty
+            : result.Data?.ToString() ?? string.Empty;
 }
 
 /// <summary>Validation and composition tests for the andy agent's external prompt sources.</summary>
@@ -390,6 +465,21 @@ public class SwePromptConfigTests
     }
 
     [Fact]
+    public void AppendSkillsBlock_DoesNotLeakManifestOrHostPaths()
+    {
+        // Lazy disclosure must expose names/descriptions only — never the SKILL.md manifest path or
+        // any host filesystem location (those live outside the workspace-scoped file permissions and
+        // would only provoke denied read_file calls).
+        var prompt = SwePromptConfig.AppendSkillsBlock(
+            "Base prompt.",
+            [MakeSkill("pdf-forms", "Fill and extract PDF forms."), MakeSkill("react-review", "Review React code.")]);
+
+        Assert.DoesNotContain("SKILL.md", prompt);
+        Assert.DoesNotContain("/s/pdf-forms", prompt);       // DirectoryPath / ManifestPath root
+        Assert.DoesNotContain("/s/react-review", prompt);
+    }
+
+    [Fact]
     public void Validate_MissingPromptFile_Throws()
     {
         var ex = Assert.Throws<ArgumentException>(() => SwePromptConfig.Load("/no/such/file.md", null));
@@ -450,5 +540,147 @@ public class SwePromptConfigTests
     {
         var ex = Assert.Throws<ArgumentException>(() => SwePromptConfig.Load(null, "/no/such/dir"));
         Assert.Contains("directory", ex.Message);
+    }
+}
+
+/// <summary>
+/// Security + behavior tests for the <c>skill_file</c> tool: a skill may read its OWN package
+/// resources, but nothing outside its directory (another skill, the parent root, an arbitrary host
+/// path, or a symlink that escapes). No network or Docker.
+/// </summary>
+public class SkillResourceToolTests
+{
+    private static bool IsPosix => !RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+    /// <summary>
+    /// Builds a skills root containing skill <paramref name="name"/> with a <c>references/api.md</c>
+    /// resource, plus a sibling <c>secret.txt</c> in the root (outside any skill). Returns
+    /// (skillsRoot, tool).
+    /// </summary>
+    private static (string root, SkillResourceTool tool) MakeTool(string name = "pdf-forms")
+    {
+        var root = Directory.CreateTempSubdirectory("swe-skills-").FullName;
+        var skill = Path.Combine(root, name);
+        Directory.CreateDirectory(Path.Combine(skill, "references"));
+        File.WriteAllText(
+            Path.Combine(skill, "SKILL.md"),
+            $"---\nname: {name}\ndescription: A skill.\n---\n# body\n");
+        File.WriteAllText(Path.Combine(skill, "references", "api.md"), "RESOURCE-CONTENT");
+        File.WriteAllText(Path.Combine(root, "secret.txt"), "TOP-SECRET");
+
+        var opts = new Andy.Skills.Tools.SkillCatalogOptions();
+        opts.Roots.Add(root);
+        var tool = new SkillResourceTool(new Andy.Skills.Tools.SkillCatalog(opts));
+        tool.InitializeAsync().GetAwaiter().GetResult(); // ToolBase.ExecuteAsync requires init first
+        return (root, tool);
+    }
+
+    private static Task<ToolResult> Run(SkillResourceTool tool, string skill, string path, CancellationToken ct = default) =>
+        tool.ExecuteAsync(
+            new Dictionary<string, object?> { ["skill"] = skill, ["path"] = path },
+            new ToolExecutionContext { CancellationToken = ct });
+
+    private static string ContentOf(ToolResult result) =>
+        result.Data is IDictionary<string, object?> d && d.TryGetValue("content", out var c)
+            ? c?.ToString() ?? string.Empty
+            : result.Data?.ToString() ?? string.Empty;
+
+    [Fact]
+    public async Task ReadsResourceWithinSkillDirectory()
+    {
+        var (root, tool) = MakeTool();
+        try
+        {
+            var result = await Run(tool, "pdf-forms", "references/api.md");
+            Assert.True(result.IsSuccessful, result.ErrorMessage);
+            Assert.Equal("RESOURCE-CONTENT", ContentOf(result));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task DeniesParentTraversal()
+    {
+        var (root, tool) = MakeTool();
+        try
+        {
+            // secret.txt lives in the skills ROOT, one level above the skill directory.
+            var result = await Run(tool, "pdf-forms", "../secret.txt");
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("denied", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task DeniesAbsolutePath()
+    {
+        var (root, tool) = MakeTool();
+        try
+        {
+            var result = await Run(tool, "pdf-forms", Path.Combine(root, "secret.txt"));
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("relative", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task DeniesSymlinkEscape()
+    {
+        if (!IsPosix) return;
+        var (root, tool) = MakeTool();
+        try
+        {
+            var link = Path.Combine(root, "pdf-forms", "escape.txt");
+            File.CreateSymbolicLink(link, Path.Combine(root, "secret.txt"));
+
+            var result = await Run(tool, "pdf-forms", "escape.txt");
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("denied", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task MissingResource_Fails()
+    {
+        var (root, tool) = MakeTool();
+        try
+        {
+            var result = await Run(tool, "pdf-forms", "references/nope.md");
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("No resource", result.ErrorMessage ?? "");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task UnknownSkill_Fails()
+    {
+        var (root, tool) = MakeTool();
+        try
+        {
+            var result = await Run(tool, "does-not-exist", "references/api.md");
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("No skill named", result.ErrorMessage ?? "");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Cancellation_ReportsCancelled()
+    {
+        var (root, tool) = MakeTool();
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            // ToolBase.ExecuteAsync catches the cancellation and reports it as a failed result.
+            var result = await Run(tool, "pdf-forms", "references/api.md", cts.Token);
+            Assert.False(result.IsSuccessful);
+            Assert.Contains("cancel", result.ErrorMessage ?? "", StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 }
