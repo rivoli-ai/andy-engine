@@ -15,12 +15,15 @@ agent runs.
 
 A *candidate* is a configuration the harness can run unchanged:
 
-- **andy agent:** the system prompt (`SweSystemPrompt`) + token limits + tool set.
-  - *Prerequisite:* `SweSystemPrompt` is currently hardcoded. Add `--system-prompt-file <path>`
-    (and thread it through `SweAgentFactory`) so a candidate's instructions are a file. **This is
-    the one small code change the loop needs to tune andy.**
+- **andy agent:** the system prompt + per-repo rules + **skills** + token limits + tool set. All of
+  these are now file-driven flags (no code change needed to tune andy):
+  - `--system-prompt-file <path>` replaces the built-in `SweSystemPrompt` ({workspace} substituted).
+  - `--rules-dir <path>` appends per-repo rules (`<repo>.md`) out-of-band.
+  - `--skills-dir <path>` is the with-skills arm: it gives andy the `skill` + `skill_file` tools and
+    a lazy-disclosure prompt summary. "No skills vs with skills" is two andy candidates — omit vs
+    pass `--skills-dir`. Validated once at run start (fails fast on an empty/invalid dir).
 - **external agent (opencode/aider):** `AGENTS.md` instructions + a **skills directory** + model.
-  - "No skills vs with skills" is literally two candidates here: empty skills dir vs curated one.
+  - "No skills vs with skills" is also two candidates here: empty skills dir vs curated one.
   - Drive via `--agent external --agent-cmd "..."`; point the CLI at a per-candidate config dir.
 
 A candidate is therefore: `{ instructions: text, skills: [skill...], model: id, limits: {...} }`.
@@ -117,11 +120,13 @@ candidates + leaderboard under `swebench-tuning/`. Resume from the leaderboard a
 
 ## 8. Build order
 
-1. `--system-prompt-file` for the andy agent (the only blocking code change to tune andy). *(small)*
+1. ~~`--system-prompt-file` for the andy agent.~~ **Done** — plus `--rules-dir` and `--skills-dir`
+   (with-skills arm) are file-driven flags on the andy agent; no code change is now blocking. *(done)*
 2. Tuning driver: candidate model, leaderboard, dev/holdout split helper over a subset file. *(small)*
 3. Reflexion loop on **T10** with mimo/deepseek-flash — prove the mechanism end-to-end. *(medium)*
 4. Promotion to **T100** + holdout gating. *(medium)*
-5. External-agent (opencode) candidates: AGENTS.md + skills dir → the no-skills-vs-skills study. *(medium)*
+5. The no-skills-vs-skills study, runnable on **either** agent now: andy via `--skills-dir`, or
+   external (opencode) via AGENTS.md + skills dir. *(medium)*
 6. Add repos for **T500+** — separate, ongoing (parser + gold-validate per repo). *(large)*
 
-Steps 1–4 are achievable now on existing data; step 6 is the long pole for scale.
+Step 1 is done; steps 2–4 are achievable now on existing data; step 6 is the long pole for scale.
