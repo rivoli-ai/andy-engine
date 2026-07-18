@@ -10,7 +10,7 @@
     <!-- Package Information -->
     <PackageId>Andy.Engine</PackageId>
     <Title>Andy Engine</Title>
-    <Description>Production-grade C# framework for LLM-driven agents with planning, tool execution, and state management. Part of the Andy ecosystem.</Description>
+    <Description>C# framework for building LLM-driven agents that call tools via native function-calling (SimpleAgent). Part of the Andy ecosystem. Alpha — see the README warning.</Description>
     <Version>1.0.0-alpha.1</Version>
     <Authors>Sam Rivoli</Authors>
     <Company>Rivoli AI</Company>

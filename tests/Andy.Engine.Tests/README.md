@@ -2,9 +2,36 @@
 
 Integration tests for the Andy.Engine library.
 
-## Running Tests with Real LLM
+## Default (deterministic, offline)
 
-Tests ending with `WithRealLlm` require an OpenAI API key. There are two ways to configure this:
+```bash
+dotnet test
+```
+
+The default suite is **Mock-only**: it makes **no LLM network calls** and is deterministic, even
+on a machine that has `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` configured. Live-LLM cases are opt-in
+(see below), so a plain `dotnet test` never spends money and never fails because of model-output
+variation.
+
+## Running the live-LLM suite (opt-in)
+
+Live cases are gated by the `ANDY_LIVE_LLM_TESTS` environment variable **in addition to** a
+configured API key — an API key alone is not enough. To run them:
+
+```bash
+ANDY_LIVE_LLM_TESTS=1 OPENAI_API_KEY=sk-your-api-key-here dotnet test
+```
+
+> **Cost & variability:** live cases make **paid** calls to the configured provider and exercise a
+> real model, so their outputs vary between runs and occasional flakes are expected. Run them
+> intentionally (e.g. before a benchmark or release), not on every `dotnet test`.
+
+Accepted truthy values for `ANDY_LIVE_LLM_TESTS`: `1`, `true`, `yes` (case-insensitive). Each
+live-capable `[Theory]` still runs its Mock row too; the opt-in only adds the `Real` row.
+
+## Configuring credentials for the live suite
+
+There are two ways to configure the API key:
 
 ### Option 1: Environment Variable (Recommended for macOS/Linux)
 
@@ -98,24 +125,21 @@ export OPENAI_MODEL=gpt-4o-mini
 
 ## Running Tests
 
-Run all tests:
+Run all (default, Mock-only) tests:
 ```bash
 dotnet test
 ```
 
-Run only mocked tests (no API key needed):
+Live-LLM cases only appear when opted in. Without the opt-in, the `Real` rows are not emitted at
+all, so a `--filter` for them matches nothing:
 ```bash
-dotnet test --filter "WithMockedLlm"
-```
-
-Run only real LLM tests:
-```bash
-dotnet test --filter "WithRealLlm"
+# Opt in first, then filter to the live rows if desired:
+ANDY_LIVE_LLM_TESTS=1 OPENAI_API_KEY=sk-... dotnet test --filter "DisplayName~Real"
 ```
 
 Run a specific test:
 ```bash
-dotnet test --filter "ListDirectory_BasicListing_WithRealLlm"
+dotnet test --filter "ListDirectory_BasicListing"
 ```
 
 ## Test Structure
