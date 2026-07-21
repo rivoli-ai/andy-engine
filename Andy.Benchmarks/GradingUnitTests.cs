@@ -95,7 +95,9 @@ public class GradingUnitTests
 
         var allPass = new Dictionary<string, TestStatus>
         {
-            ["a"] = TestStatus.Passed, ["b"] = TestStatus.Passed, ["c"] = TestStatus.Passed,
+            ["a"] = TestStatus.Passed,
+            ["b"] = TestStatus.Passed,
+            ["c"] = TestStatus.Passed,
         };
         Assert.Equal(ResolvedStatus.Full, engine.GetResolutionStatus(f2p, p2p, allPass));
 
@@ -106,7 +108,9 @@ public class GradingUnitTests
         // P2P regression -> No, even with all F2P passing.
         var p2pFail = new Dictionary<string, TestStatus>
         {
-            ["a"] = TestStatus.Passed, ["b"] = TestStatus.Passed, ["c"] = TestStatus.Failed,
+            ["a"] = TestStatus.Passed,
+            ["b"] = TestStatus.Passed,
+            ["c"] = TestStatus.Failed,
         };
         Assert.Equal(ResolvedStatus.No, engine.GetResolutionStatus(f2p, p2p, p2pFail));
 

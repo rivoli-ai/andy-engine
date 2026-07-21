@@ -114,6 +114,64 @@ dotnet run --project Andy.Benchmarks -- \
 Both arms grade identically, which is what makes a no-skills-vs-skills (or andy-vs-opencode)
 comparison meaningful. (Verify the exact opencode subcommand/flags against your installed version.)
 
+### Agent Skills (`--skills-dir`) — the no-skills-vs-skills study
+
+`--skills-dir` is the **with-skills arm** for the in-process `andy` agent. It gives the agent
+[Agent Skills](https://www.anthropic.com/news/skills) via lazy disclosure, so you can measure
+whether skills move resolution rate against an identical no-skills baseline (same model, subset,
+grader, and report).
+
+**Skills directory layout.** The directory is a *root* of skills; each skill is its own
+subdirectory with a `SKILL.md` manifest (YAML frontmatter + markdown body), plus any resources it
+references:
+
+```
+skills/
+  pdf-forms/
+    SKILL.md            # frontmatter: name, description (required); body = full instructions
+    scripts/fill.py     # optional package resources the skill's body points at
+    references/api.md
+  react-review/
+    SKILL.md
+```
+
+**What the flag does.** For each instance the andy agent gains two tools and a prompt block:
+
+- `skill` — loads a skill's full `SKILL.md` body on demand.
+- `skill_file` — read-only access to a skill's OWN package resources (`scripts/`, `references/`,
+  …). These live outside the workspace-scoped file permissions, so this tool is the sanctioned
+  bridge; access is confined to the named skill's directory (no `..`, symlink, or absolute-path
+  escape; no write).
+- A **lazy-disclosure** summary is appended to the system prompt: one line per skill, **name and
+  description only** — never a `SKILL.md` path (paths would only provoke denied `read_file` calls).
+  The agent calls `skill` by name when a skill looks relevant.
+
+**Validation & diagnostics (fail-fast).** The catalog is validated and scanned **once** at run
+start, before any instance is cloned:
+
+- A missing `--skills-dir`, or a directory with **zero usable skills**, aborts the run with a clear
+  error — the with-skills arm can never silently collapse into the baseline.
+- Discovery diagnostics (skipped/unreadable/duplicate/malformed manifests, lint warnings) are
+  surfaced: fatal ones in the error, non-fatal ones on stderr (prefixed `[skills]`).
+
+**Reproducible study — run both arms:**
+
+```bash
+# Baseline (no skills):
+dotnet run --project Andy.Benchmarks -- \
+  --dataset data/<subset>.jsonl --stage all --run-id andy-noskills \
+  --model xiaomi/mimo-v2.5 --subset-file data/<validated>.subset --resume
+
+# With skills (same everything, plus --skills-dir):
+dotnet run --project Andy.Benchmarks -- \
+  --dataset data/<subset>.jsonl --stage all --run-id andy-skills \
+  --model xiaomi/mimo-v2.5 --subset-file data/<validated>.subset \
+  --skills-dir ./skills --resume
+```
+
+Compare the two `report.json` resolution rates. `--skills-dir` applies only to `--agent andy`; an
+external CLI agent brings its own skills mechanism.
+
 Resilience / safety knobs:
 
 - `--agent-timeout-seconds <n>` (default 1800): per-instance wall-clock cap. A runaway agent is
@@ -122,7 +180,7 @@ Resilience / safety knobs:
 - **Token limits default GENEROUS for large-context models** (the norm for capable coding agents).
   A re-baseline showed tight limits REGRESS such models — compaction + output truncation hide
   information and burn turns, producing empty patches. Defaults: `--max-turns 50`,
-  `--max-output-tokens 16384`, `--max-context-tokens 1000000`, `--max-tool-result-chars 100000`.
+  `--max-output-tokens 32768`, `--max-context-tokens 1000000`, `--max-tool-result-chars 100000`.
   **Tighten these for token-constrained / small-context models** to save cost. (mimo-v2.5 went
   from a regression under tight 200k/8k/40 limits back to baseline once the limits were relaxed.)
 - Malformed/empty LLM responses (JSON parse failures) and HTTP 429/5xx are retried with backoff
@@ -135,4 +193,18 @@ Resilience / safety knobs:
 - `OPENROUTER_API_KEY` must be set for the agent stage (grading needs only Docker).
 - Outputs land in `swebench-runs/<run-id>/` (`predictions.jsonl`, `report.json`, per-instance logs).
   These are gitignored — copy them out if you need to preserve a baseline.
-```
+
+## Status
+
+### 2026-07-18 — Agent Skills productionized for the andy agent
+
+- `--skills-dir` wires `skill` + read-only `skill_file` tools into the in-process andy agent, with
+  lazy-disclosure prompt summaries (names/descriptions only, no host paths).
+- The skills catalog is validated and scanned once at run start; an invalid or empty `--skills-dir`
+  fails fast so the with-skills arm cannot silently collapse into the baseline. Discovery
+  diagnostics are surfaced (error for fatal, stderr for non-fatal).
+- Registration and skill-body loading are covered by credential-free tests (no API key, Docker, or
+  network) that run in CI; `skill_file` traversal/symlink/absolute-path denials are tested too.
+- Documented CLI defaults reconciled with `SweBenchCliOptions` (`--max-output-tokens` default is
+  32768).
+- Remaining: gather no-skills-vs-skills numbers on a validated subset once a skills corpus exists.

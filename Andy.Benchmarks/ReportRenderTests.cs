@@ -112,8 +112,14 @@ public class ReportRenderTests
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "report.json"), JsonSerializer.Serialize(new
         {
-            instance_id = id, patch_applied = false, test_patch_applied = false,
-            empty_patch = true, resolved = false, resolved_status = "No", error = (string?)null, timed_out = false,
+            instance_id = id,
+            patch_applied = false,
+            test_patch_applied = false,
+            empty_patch = true,
+            resolved = false,
+            resolved_status = "No",
+            error = (string?)null,
+            timed_out = false,
         }));
     }
 

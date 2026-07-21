@@ -5,6 +5,8 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+    # `edited` so the PR title/body attribution check re-runs when they change.
+    types: [ opened, synchronize, reopened, edited ]
 
 jobs:
   build-and-test:
@@ -20,4 +22,45 @@ jobs:
       - name: Build
         run: dotnet build --no-restore
       - name: Test
+        # Live-LLM cases are opt-in (ANDY_LIVE_LLM_TESTS is unset here), so this is offline
+        # and deterministic even if a runner happened to have provider credentials.
         run: dotnet test --no-build --verbosity normal
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need history + base for the attribution range check
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore
+        run: dotnet restore
+
+      - name: Formatting (whitespace + style)
+        # The analyzers pass is intentionally excluded: it entangles with pre-existing,
+        # non-format compiler warnings and would make the gate flaky. Whitespace + style are the
+        # reliable, deterministic formatters.
+        run: |
+          dotnet format whitespace Andy.Engine.sln --verify-no-changes
+          dotnet format style Andy.Engine.sln --verify-no-changes
+
+      - name: No warnings from SWE-bench code
+        run: dotnet build src/Andy.Engine.SweBench/Andy.Engine.SweBench.csproj -warnaserror
+
+      - name: No assistant attribution in commit / PR metadata
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -n "${BASE_SHA:-}" ]; then
+            ./scripts/check-attribution.sh --range "${BASE_SHA}..${HEAD_SHA}"
+            if [ -n "${PR_TITLE:-}" ]; then ./scripts/check-attribution.sh --text "$PR_TITLE"; fi
+            if [ -n "${PR_BODY:-}" ]; then ./scripts/check-attribution.sh --text "$PR_BODY"; fi
+          else
+            echo "Not a pull_request event; skipping range / PR-metadata attribution check."
+          fi

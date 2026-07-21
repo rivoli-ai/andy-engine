@@ -1,7 +1,6 @@
 # Andy.Engine
 
-C# framework for building LLM-driven agents with tool execution, planning, and state management.
-
+A C# framework for building LLM-driven agents that call tools via native function-calling.
 
 > **ALPHA RELEASE WARNING**
 >
@@ -17,14 +16,24 @@ C# framework for building LLM-driven agents with tool execution, planning, and s
 >
 > **USE AT YOUR OWN RISK**
 
+## Overview
+
+`SimpleAgent` is the agent entry point. It runs a turn-based loop that uses the LLM provider's
+native function-calling to decide which registered tools to invoke, executes them through the
+Andy.Tools framework, feeds the results back to the model, and repeats until the model produces a
+final answer or a limit (turns / output tokens / context tokens) is reached. There is no separate
+planner/critic layer — the loop mirrors the pattern used by successful CLI agents.
+
 ## Features
 
-- **Modular Architecture**: Planner, Executor, Critic, and Policy Engine components
-- **Tool Management**: Schema validation, retry policies, error handling
-- **State Management**: Persistent state tracking across agent turns
-- **Observation Normalization**: Structured extraction of key facts and affordances
-- **Policy Engine**: Intelligent retry, fallback, and error recovery strategies
-- **Event-Driven**: Rich events for monitoring and debugging agent execution
+- **Native function-calling loop** — the model drives tool use directly; no bespoke planner DSL.
+- **Andy.Tools integration** — a registry + executor of built-in tools (file, search, text, …) with
+  per-run permission scoping (allowed paths, process/network toggles).
+- **Turn & token budgets** — bound each run with `maxTurns`, `maxOutputTokens`, `maxContextTokens`.
+- **Context compression** — the per-request view is compressed to fit the token budget while the
+  full conversation log is retained.
+- **Cancellation** — `ProcessMessageAsync` honors a `CancellationToken`.
+- **Tool events** — subscribe to `ToolCalled` for monitoring and debugging.
 
 ## Installation
 
@@ -32,109 +41,94 @@ C# framework for building LLM-driven agents with tool execution, planning, and s
 dotnet add package Andy.Engine --version 1.0.0-alpha.1
 ```
 
+Target framework: **.NET 8.0**.
+
 ## Quick Start
+
+The example below is maintained as a compiling project at
+[`examples/Andy.Engine.QuickStart`](examples/Andy.Engine.QuickStart) (built in CI, so it cannot
+drift from the public API). Set `OPENAI_API_KEY` before running.
 
 ```csharp
 using Andy.Engine;
-using Andy.Model.Llm;
+using Andy.Llm.Extensions;
+using Andy.Llm.Providers;
+using Andy.Tools;
 using Andy.Tools.Core;
+using Andy.Tools.Framework;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
-// Configure and build an agent
-var agent = AgentBuilder.Create()
-    .WithDefaults(llmProvider, toolRegistry, toolExecutor)
-    .WithPlannerOptions(new PlannerOptions { Temperature = 0.0 })
+// 1. Configure an LLM provider (OpenAI-compatible; the key is read from OPENAI_API_KEY).
+var config = new ConfigurationBuilder()
+    .AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Llm:DefaultProvider"] = "openai",
+        ["Llm:Providers:openai:Provider"] = "openai",
+        ["Llm:Providers:openai:ApiKey"] = Environment.GetEnvironmentVariable("OPENAI_API_KEY"),
+        ["Llm:Providers:openai:Model"] = "gpt-4o-mini",
+        ["Llm:Providers:openai:Enabled"] = "true",
+    })
     .Build();
 
-// Define goal and constraints
-var goal = new AgentGoal(
-    UserGoal: "Find and summarize recent AI news",
-    Constraints: new[] { "Focus on last week", "Include at least 3 sources" }
-);
-
-// Set budget limits
-var budget = new Budget(
-    MaxTurns: 10,
-    MaxWallClock: TimeSpan.FromMinutes(5)
-);
-
-// Configure error handling
-var errorPolicy = new ErrorHandlingPolicy(
-    MaxRetries: 3,
-    BaseBackoff: TimeSpan.FromSeconds(1),
-    UseFallbacks: true,
-    AskUserWhenMissingFields: true
-);
-
-// Run the agent
-var result = await agent.RunAsync(goal, budget, errorPolicy);
-
-if (result.Success)
+// 2. Register the LLM services and the built-in tools, scoped to the current directory.
+var services = new ServiceCollection();
+services.AddSingleton<IConfiguration>(config);
+services.AddLlmServices(config);
+services.AddAndyTools(options =>
 {
-    Console.WriteLine($"Goal achieved in {result.TotalTurns} turns");
-}
+    options.RegisterBuiltInTools = true;
+    options.DefaultPermissions.AllowedPaths = new HashSet<string> { Environment.CurrentDirectory };
+});
+
+using var provider = services.BuildServiceProvider();
+
+// 3. Initialize the tool framework, then resolve the registry, executor, and LLM provider.
+await provider.GetRequiredService<IToolLifecycleManager>().InitializeAsync();
+var registry = provider.GetRequiredService<IToolRegistry>();
+var executor = provider.GetRequiredService<IToolExecutor>();
+var llm = provider.GetRequiredService<ILlmProviderFactory>().CreateProvider("openai");
+
+// 4. Build the agent. It drives the registered tools with native LLM function-calling.
+using var agent = new SimpleAgent(
+    llm,
+    registry,
+    executor,
+    systemPrompt: "You are a helpful assistant. Use the available tools to answer the user.",
+    maxTurns: 10,
+    workingDirectory: Environment.CurrentDirectory);
+
+// 5. Run a turn and print the outcome.
+var result = await agent.ProcessMessageAsync("List the files in the current directory.");
+Console.WriteLine(result.Success ? result.Response : $"Stopped: {result.StopReason}");
 ```
 
-## Architecture
+## Prerequisites
 
-The framework follows a modular architecture based on the agent loop:
+`SimpleAgent` takes three collaborators, all from the Andy ecosystem:
 
-1. **Planner**: Decides the next action (tool call, ask user, replan, stop)
-2. **Executor**: Validates and executes tool calls with retry logic
-3. **Critic**: Evaluates observations against goals
-4. **Policy Engine**: Handles errors, retries, and fallbacks
-5. **State Manager**: Tracks agent state and working memory
-6. **Observation Normalizer**: Converts tool outputs to structured observations
+- **`ILlmProvider`** (Andy.Llm) — resolved from `ILlmProviderFactory.CreateProvider(name)` after
+  `services.AddLlmServices(config)`.
+- **`IToolRegistry`** (Andy.Tools) — the set of available tools, populated by `services.AddAndyTools(...)`.
+  Call `IToolLifecycleManager.InitializeAsync()` once before the first run.
+- **`IToolExecutor`** (Andy.Tools) — validates and runs tool calls with the configured permissions.
 
-## Components
+Useful `SimpleAgent` constructor options: `maxTurns`, `maxOutputTokens`, `maxToolResultChars`,
+`maxContextTokens`, `enablePromptCaching`, and `extraBody` (provider-specific request fields).
 
-### Planner
-- `IPlanner` interface for custom implementations
-- `LlmPlanner` for LLM-based planning with structured output
-- Support for tool calls, user queries, replanning, and stopping
+`ProcessMessageAsync` returns a `SimpleAgentResult(bool Success, string Response, int TurnCount,
+TimeSpan Duration, string StopReason)`.
 
-### Executor
-- `IExecutor` interface for tool execution
-- `ToolAdapter` with schema validation and error mapping
-- Configurable retry policies and timeouts
+## Integration with the Andy ecosystem
 
-### Critic
-- `ICritic` interface for goal assessment
-- `LlmCritic` for LLM-based evaluation
-- Recommendations for continue, replan, clarify, or stop
-
-### State Management
-- `IStateStore` for persistence (in-memory and custom implementations)
-- `StateManager` for state transitions and working memory
-- Automatic memory compression when limits are reached
-
-### Policy Engine
-- Retry logic for transient failures
-- Fallback tool selection
-- User interaction for missing information
-- Budget enforcement
-
-## Events
-
-The agent emits events for monitoring and debugging:
-
-- `TurnStarted`: Fired at the beginning of each turn
-- `TurnCompleted`: Fired when a turn completes with timing information
-- `ToolCalled`: Fired when a tool is executed
-- `UserInputRequested`: Fired when user input is needed
-
-## Integration with Andy Ecosystem
-
-Andy.Engine integrates seamlessly with other Andy packages:
-
-- **Andy.Tools**: Tool registry and execution framework
-- **Andy.Llm**: LLM provider abstractions
-- **Andy.Model**: Shared data models
-- **Andy.Context**: Context management
-- **Andy.Configuration**: Configuration management
+- **Andy.Tools** — tool registry and execution framework
+- **Andy.Llm** — LLM provider abstractions
+- **Andy.Model** — shared data models
+- **Andy.Context** — context management and compression
 
 ## License
 
-Apache-2.0 License - see LICENSE file for details
+Apache-2.0 License — see LICENSE file for details
 
 ## Contributing
 

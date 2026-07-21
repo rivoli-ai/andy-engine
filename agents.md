@@ -59,6 +59,21 @@ When completing a set of tasks or phase milestones:
 - Ensure all tests pass: `dotnet test`
 - Generate coverage reports for significant changes
 
+### Pre-merge quality gate
+
+The `quality` job in `.github/workflows/ci.yml` runs on every PR and enforces:
+
+- **Formatting** — `dotnet format whitespace` and `dotnet format style` verify with no changes.
+  (The analyzers pass is excluded because it entangles with pre-existing compiler warnings.)
+- **No SWE-bench warnings** — `dotnet build src/Andy.Engine.SweBench -warnaserror`.
+- **No assistant attribution** — `scripts/check-attribution.sh` scans commit messages in the PR
+  range and the PR title/body for prohibited attribution (Claude/Anthropic/other code assistants),
+  per the rule above. None of these steps invoke live LLM tests.
+
+Install the same checks locally with `./scripts/setup-git-hooks.sh`: a `commit-msg` hook runs the
+attribution check and a `pre-commit` hook verifies formatting of staged `.cs` files. To run the
+attribution check by hand: `./scripts/check-attribution.sh --range main..HEAD`.
+
 ### Testing Requirements for Code Changes
 
 **CRITICAL**: When making code changes or claiming fixes:

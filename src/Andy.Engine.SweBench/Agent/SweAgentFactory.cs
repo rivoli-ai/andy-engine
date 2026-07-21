@@ -55,13 +55,16 @@ public sealed class SweAgentFactory : ISweAgentFactory
 {
     private readonly RunContext _ctx;
     private readonly SwePromptConfig _prompt;
+    private readonly SkillsConfig _skills;
 
-    // Loads/validates the prompt sources once (throws a clear ArgumentException on a bad
-    // --system-prompt-file / --rules-dir, before any instance work begins).
+    // Loads/validates the prompt sources and the skills catalog ONCE (throws a clear
+    // ArgumentException on a bad --system-prompt-file / --rules-dir / --skills-dir, before any
+    // instance work begins). The skills catalog is scanned once and shared by every instance.
     public SweAgentFactory(RunContext ctx)
     {
         _ctx = ctx;
         _prompt = SwePromptConfig.Load(ctx.SystemPromptFile, ctx.RulesDir);
+        _skills = SkillsConfig.Load(ctx.SkillsDir);
     }
 
     /// <summary>The OpenRouter API key from the environment (null/empty if unset).</summary>
@@ -70,7 +73,54 @@ public sealed class SweAgentFactory : ISweAgentFactory
     ISweAgent ISweAgentFactory.Create(string workspaceDir, Model.SweBenchInstance instance) =>
         Create(workspaceDir, instance);
 
+    /// <summary>
+    /// The tools/registry/executor half of an agent: the DI container, the workspace-scoped tool
+    /// registry (file/search/edit + PDF, opt-in run_tests, and the skill tools when --skills-dir is
+    /// set), and the list of enabled tool ids. Deliberately does NOT construct the LLM provider, so
+    /// composition and skill registration are exercisable without any API key or network — see the
+    /// credential-free registration tests. Caller owns disposing <see cref="Services"/>.
+    /// </summary>
+    internal sealed record ToolStack(
+        ServiceProvider Services,
+        IToolRegistry Registry,
+        IToolExecutor Executor,
+        IReadOnlyList<string> AvailableTools);
+
     public SweAgent Create(string workspaceDir, Model.SweBenchInstance instance)
+    {
+        var stack = BuildToolStack(workspaceDir, instance);
+        var provider = stack.Services;
+
+        var factory = provider.GetRequiredService<ILlmProviderFactory>();
+        var rawProvider = factory.CreateProvider("openrouter");
+        var policy = new RateLimitPolicy
+        {
+            MaxRetries = _ctx.MaxRetries,
+            MaxDelay = TimeSpan.FromSeconds(_ctx.MaxDelaySeconds),
+        };
+        var llm = new RateLimitingLlmProvider(
+            rawProvider, policy, provider.GetService<ILoggerFactory>()?.CreateLogger("swebench.llm"));
+
+        var systemPrompt = _prompt.Build(workspaceDir, instance.Repo);
+        if (_skills.Enabled)
+            systemPrompt = SwePromptConfig.AppendSkillsBlock(systemPrompt, _skills.Skills);
+
+        var agent = new SimpleAgent(
+            llm,
+            stack.Registry,
+            stack.Executor,
+            systemPrompt: systemPrompt,
+            maxTurns: _ctx.MaxTurns,
+            workingDirectory: workspaceDir,
+            logger: provider.GetService<ILoggerFactory>()?.CreateLogger<SimpleAgent>(),
+            maxOutputTokens: _ctx.MaxOutputTokens,
+            maxContextTokens: _ctx.MaxContextTokens,
+            maxToolResultChars: _ctx.MaxToolResultChars);
+
+        return new SweAgent(agent, rawProvider.Name, stack.AvailableTools, provider);
+    }
+
+    internal ToolStack BuildToolStack(string workspaceDir, Model.SweBenchInstance instance)
     {
         var services = new ServiceCollection();
 
@@ -126,36 +176,31 @@ public sealed class SweAgentFactory : ISweAgentFactory
                 new Grading.DockerClient(), new Grading.TestSpecBuilder(),
                 maxOutputChars: _ctx.MaxToolResultChars);
             var runTests = new RunTestsTool(instance, workspaceDir, testRunner, _ctx.MaxTestRuns);
-            registry.RegisterTool(runTests.Metadata, _ => runTests, new Dictionary<string, object>());
+            registry.RegisterTool(runTests.Metadata, _ => runTests);
             registry.SetToolEnabled(runTests.Metadata.Id, true);
         }
 
-        var factory = provider.GetRequiredService<ILlmProviderFactory>();
-        var rawProvider = factory.CreateProvider("openrouter");
-        var policy = new RateLimitPolicy
+        // Optional Agent Skills (the with-skills study arm). The catalog was validated and scanned
+        // once at construction (SkillsConfig), so an invalid/empty --skills-dir already failed the
+        // run before we got here. Registered as instances (like RunTestsTool) because both carry the
+        // shared catalog, a constructor dependency the registry's type-based instantiation can't
+        // satisfy:
+        //   - `skill`      loads a skill's SKILL.md body on demand (lazy disclosure).
+        //   - `skill_file` gives read-only access to a skill's own package resources, since those
+        //                  files live outside the workspace-scoped file permissions.
+        // Both come from Andy.Skills.Tools and share the pre-validated catalog.
+        if (_skills.Enabled)
         {
-            MaxRetries = _ctx.MaxRetries,
-            MaxDelay = TimeSpan.FromSeconds(_ctx.MaxDelaySeconds),
-        };
-        var llm = new RateLimitingLlmProvider(
-            rawProvider, policy, provider.GetService<ILoggerFactory>()?.CreateLogger("swebench.llm"));
+            var skillTool = new Andy.Skills.Tools.SkillTool(_skills.Catalog!);
+            registry.RegisterTool(skillTool.Metadata, _ => skillTool);
+            registry.SetToolEnabled(skillTool.Metadata.Id, true);
 
-        var agent = new SimpleAgent(
-            llm,
-            registry,
-            executor,
-            systemPrompt: _prompt.Build(workspaceDir, instance.Repo),
-            maxTurns: _ctx.MaxTurns,
-            workingDirectory: workspaceDir,
-            logger: provider.GetService<ILoggerFactory>()?.CreateLogger<SimpleAgent>(),
-            maxOutputTokens: _ctx.MaxOutputTokens,
-            maxContextTokens: _ctx.MaxContextTokens,
-            maxToolResultChars: _ctx.MaxToolResultChars);
+            var resourceTool = new Andy.Skills.Tools.SkillResourceTool(_skills.Catalog!);
+            registry.RegisterTool(resourceTool.Metadata, _ => resourceTool);
+            registry.SetToolEnabled(resourceTool.Metadata.Id, true);
+        }
 
-        return new SweAgent(
-            agent,
-            rawProvider.Name,
-            registry.Tools.Where(t => t.IsEnabled).Select(t => t.Metadata.Id).ToList(),
-            provider);
+        var availableTools = registry.Tools.Where(t => t.IsEnabled).Select(t => t.Metadata.Id).ToList();
+        return new ToolStack(provider, registry, executor, availableTools);
     }
 }

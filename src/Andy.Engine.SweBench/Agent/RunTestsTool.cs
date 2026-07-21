@@ -57,7 +57,7 @@ public sealed class RunTestsTool : ToolBase
     };
 
     protected override async Task<ToolResult> ExecuteInternalAsync(
-        Dictionary<string, object> parameters, ToolExecutionContext context)
+        Dictionary<string, object?> parameters, ToolExecutionContext context)
     {
         if (_used >= _maxInvocations)
             return ToolResult.Failure(
