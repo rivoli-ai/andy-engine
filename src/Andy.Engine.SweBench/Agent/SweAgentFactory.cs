@@ -188,13 +188,14 @@ public sealed class SweAgentFactory : ISweAgentFactory
         //   - `skill`      loads a skill's SKILL.md body on demand (lazy disclosure).
         //   - `skill_file` gives read-only access to a skill's own package resources, since those
         //                  files live outside the workspace-scoped file permissions.
+        // Both come from Andy.Skills.Tools and share the pre-validated catalog.
         if (_skills.Enabled)
         {
             var skillTool = new Andy.Skills.Tools.SkillTool(_skills.Catalog!);
             registry.RegisterTool(skillTool.Metadata, _ => skillTool);
             registry.SetToolEnabled(skillTool.Metadata.Id, true);
 
-            var resourceTool = new SkillResourceTool(_skills.Catalog!);
+            var resourceTool = new Andy.Skills.Tools.SkillResourceTool(_skills.Catalog!);
             registry.RegisterTool(resourceTool.Metadata, _ => resourceTool);
             registry.SetToolEnabled(resourceTool.Metadata.Id, true);
         }
