@@ -311,7 +311,7 @@ internal sealed class ChildToolRegistry : IToolRegistry
     public IReadOnlyList<ToolRegistration> SearchTools(string searchText, bool enabledOnly = true) =>
         _inner.SearchTools(searchText, enabledOnly).Where(IsAllowed).ToList();
 
-    public ITool CreateTool(string toolId, IServiceProvider serviceProvider) =>
+    public ITool? CreateTool(string toolId, IServiceProvider serviceProvider) =>
         _allowedTools.Contains(toolId)
             ? _inner.CreateTool(toolId, serviceProvider)
             : throw new InvalidOperationException($"Tool '{toolId}' is not permitted for this child agent.");
@@ -386,7 +386,7 @@ internal sealed class ChildToolExecutor : IToolExecutor
     public Task<ToolExecutionResult> ExecuteAsync(
         string toolId,
         Dictionary<string, object?> parameters,
-        ToolExecutionContext context) =>
+        ToolExecutionContext? context = null) =>
         _allowedTools.Contains(toolId)
             ? _inner.ExecuteAsync(toolId, parameters, context)
             : Task.FromResult(Denied(toolId));
@@ -394,13 +394,13 @@ internal sealed class ChildToolExecutor : IToolExecutor
     public Task<IList<string>> ValidateExecutionRequestAsync(ToolExecutionRequest request) =>
         _inner.ValidateExecutionRequestAsync(request);
 
-    public Task<ToolResourceUsage> EstimateResourceUsageAsync(
+    public Task<ToolResourceUsage?> EstimateResourceUsageAsync(
         string toolId,
         Dictionary<string, object?> parameters) =>
         _inner.EstimateResourceUsageAsync(toolId, parameters);
 
-    public Task<int> CancelExecutionsAsync(string? toolId = null) =>
-        _inner.CancelExecutionsAsync(toolId);
+    public Task<int> CancelExecutionsAsync(string correlationId) =>
+        _inner.CancelExecutionsAsync(correlationId);
 
     public IReadOnlyList<RunningExecutionInfo> GetRunningExecutions() =>
         _inner.GetRunningExecutions();

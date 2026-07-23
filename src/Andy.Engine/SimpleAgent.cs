@@ -203,10 +203,13 @@ public class SimpleAgent : IDisposable
     /// (or hitting <see cref="ChildRunOptions.MaxTotalDuration"/>) cancels every child, the call
     /// awaits all of them, and no child work continues after it returns.
     /// </summary>
+    /// <param name="tasks">The child task batch; one result is reported per task, in this order.</param>
+    /// <param name="options">Parent ceilings and concurrency; null uses the conservative defaults.</param>
     /// <param name="onEvent">
     /// Optional lifecycle/progress sink; invocations are serialized, so consumers need no
     /// synchronization of their own.
     /// </param>
+    /// <param name="cancellationToken">Cancels the whole batch (reported as Cancelled results, not an exception).</param>
     public async Task<ChildTaskRunReport> RunChildTasksAsync(
         IReadOnlyList<ChildTask> tasks,
         ChildRunOptions? options = null,
@@ -417,6 +420,12 @@ public class SimpleAgent : IDisposable
         var budgeted = new BudgetedLlmProvider(plan.Provider, budget);
         try
         {
+            // WaitAsync(token) can complete via a slot released AFTER cancellation was requested
+            // (the release/cancel race inside SemaphoreSlim). Re-check here so a queued child
+            // observing cancellation never starts — the cancel happened-before the slot release,
+            // so this check is deterministic, not best-effort.
+            batchCts.Token.ThrowIfCancellationRequested();
+
             using var childCts = CancellationTokenSource.CreateLinkedTokenSource(batchCts.Token);
             if (plan.MaxDuration is { } deadline)
                 childCts.CancelAfter(deadline);
