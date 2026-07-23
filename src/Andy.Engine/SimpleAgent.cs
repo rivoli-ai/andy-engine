@@ -181,6 +181,416 @@ public class SimpleAgent : IDisposable
         _llmProvider is IVisionCapableLlmProvider vision &&
         await vision.SupportsImageInputAsync(cancellationToken);
 
+    private const string DefaultChildSystemPrompt =
+        "You are a focused sub-agent working on one delegated task. Complete the objective using " +
+        "the tools available to you, then report your findings or deliverable concisely. Do not " +
+        "ask clarifying questions; make reasonable assumptions and state them.";
+
+    /// <summary>
+    /// Run a batch of bounded child agents (issue #34). This agent's own dependencies are the
+    /// ceilings: its tool registry bounds child tools, its working directory bounds child
+    /// workspaces, its provider is the default child provider, and its maxTurns is the default
+    /// per-child turn ceiling. The whole batch is validated BEFORE any child starts — a task
+    /// that tries to widen workspace, tools, provider policy, or budgets beyond the parent
+    /// throws <see cref="ArgumentException"/> and nothing runs.
+    ///
+    /// Each child is a fresh <see cref="SimpleAgent"/> with its own conversation manager
+    /// (history isolation) processing <see cref="ChildTask.Objective"/> as its user message.
+    /// Children start in task-list order, at most <see cref="ChildRunOptions.MaxConcurrency"/>
+    /// at a time; the returned report always contains one result per task in input order.
+    ///
+    /// Cancellation is a result state, not an exception: cancelling <paramref name="cancellationToken"/>
+    /// (or hitting <see cref="ChildRunOptions.MaxTotalDuration"/>) cancels every child, the call
+    /// awaits all of them, and no child work continues after it returns.
+    /// </summary>
+    /// <param name="tasks">The child task batch; one result is reported per task, in this order.</param>
+    /// <param name="options">Parent ceilings and concurrency; null uses the conservative defaults.</param>
+    /// <param name="onEvent">
+    /// Optional lifecycle/progress sink; invocations are serialized, so consumers need no
+    /// synchronization of their own.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the whole batch (reported as Cancelled results, not an exception).</param>
+    public async Task<ChildTaskRunReport> RunChildTasksAsync(
+        IReadOnlyList<ChildTask> tasks,
+        ChildRunOptions? options = null,
+        Action<ChildAgentEvent>? onEvent = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(tasks);
+        if (tasks.Count == 0)
+            throw new ArgumentException("The child task list is empty.", nameof(tasks));
+        options ??= new ChildRunOptions();
+        if (options.MaxConcurrency < 1)
+            throw new ArgumentException("MaxConcurrency must be at least 1.", nameof(options));
+        if (options.MaxTotalTurns is < 1)
+            throw new ArgumentException("MaxTotalTurns must be at least 1.", nameof(options));
+        if (options.MaxTotalDuration is { } totalDuration && totalDuration <= TimeSpan.Zero)
+            throw new ArgumentException("MaxTotalDuration must be positive.", nameof(options));
+
+        // All-or-nothing validation: any widening attempt rejects the whole batch up front.
+        var plans = new ChildTaskPlan[tasks.Count];
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < tasks.Count; i++)
+        {
+            plans[i] = BuildChildPlan(tasks[i], i, options);
+            if (!names.Add(plans[i].Name))
+                throw new ArgumentException($"Duplicate child task name '{plans[i].Name}'.", nameof(tasks));
+        }
+
+        var parentRunId = Guid.NewGuid().ToString("N");
+        using var batchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (options.MaxTotalDuration is { } deadline)
+            batchCts.CancelAfter(deadline);
+        var budget = options.MaxTotalTurns is { } totalTurns ? new ChildTurnBudget(totalTurns) : null;
+        using var slots = new SemaphoreSlim(options.MaxConcurrency);
+
+        var eventLock = new object();
+        void Emit(ChildAgentEvent e)
+        {
+            if (onEvent is null)
+                return;
+            try
+            {
+                lock (eventLock)
+                    onEvent(e);
+            }
+            catch (Exception ex)
+            {
+                // Events are advisory: a throwing consumer must not fault the batch or the
+                // child that happened to emit the event.
+                _logger?.LogWarning(ex, "Child agent event consumer threw for {Child}", e.ChildName);
+            }
+        }
+
+        // Children are STARTED in task order (SemaphoreSlim serves async waiters FIFO), and the
+        // result array is indexed by task position, so ordering is deterministic regardless of
+        // completion order.
+        var runs = new Task<ChildTaskResult>[plans.Length];
+        for (var i = 0; i < plans.Length; i++)
+            runs[i] = RunOneChildAsync(plans[i], parentRunId, budget, slots, batchCts, Emit);
+        var results = await Task.WhenAll(runs);
+
+        var outcome = results.Any(r => r.Status == ChildTaskStatus.Cancelled)
+            ? ChildBatchOutcome.Cancelled
+            : results.Any(r => r.Status != ChildTaskStatus.Succeeded)
+                ? ChildBatchOutcome.PartialFailure
+                : ChildBatchOutcome.Succeeded;
+
+        return new ChildTaskRunReport
+        {
+            ParentRunId = parentRunId,
+            Results = results,
+            Outcome = outcome,
+            TotalTurns = results.Sum(r => r.TurnCount),
+        };
+    }
+
+    private sealed record ChildTaskPlan(
+        int TaskIndex,
+        string Name,
+        string Objective,
+        string SystemPrompt,
+        string WorkingDirectory,
+        IReadOnlySet<string>? AllowedTools,
+        ILlmProvider Provider,
+        int MaxTurns,
+        TimeSpan? MaxDuration);
+
+    private ChildTaskPlan BuildChildPlan(ChildTask task, int taskIndex, ChildRunOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        var name = task.Name ?? $"child-{taskIndex}";
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException($"Child task {taskIndex} has a blank name.");
+        if (string.IsNullOrWhiteSpace(task.Objective))
+            throw new ArgumentException($"Child task '{name}' has an empty objective.");
+
+        // Workspace ceiling: a relative subpath resolving inside the parent working directory.
+        // Trailing separators are trimmed so a parent dir like "/repo/" compares equal to the
+        // separator-free form GetFullPath produces for resolved child paths.
+        var parentRoot = Path.GetFullPath(_workingDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (parentRoot.Length == 0)
+            parentRoot = Path.GetFullPath(_workingDirectory);
+        var workingDirectory = parentRoot;
+        if (!string.IsNullOrEmpty(task.Workspace))
+        {
+            if (Path.IsPathRooted(task.Workspace))
+                throw new ArgumentException(
+                    $"Child task '{name}': Workspace must be a relative subpath of the parent working directory.");
+            workingDirectory = Path.GetFullPath(Path.Combine(parentRoot, task.Workspace));
+            var rootWithSeparator = parentRoot.EndsWith(Path.DirectorySeparatorChar)
+                ? parentRoot
+                : parentRoot + Path.DirectorySeparatorChar;
+            if (!workingDirectory.Equals(parentRoot, StringComparison.Ordinal) &&
+                !workingDirectory.StartsWith(rootWithSeparator, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Child task '{name}': Workspace '{task.Workspace}' escapes the parent working directory.");
+            }
+        }
+
+        // Tool ceiling: the allow-list must name tools that exist in the parent registry.
+        IReadOnlySet<string>? allowedTools = null;
+        if (task.AllowedTools is not null)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var toolId in task.AllowedTools)
+            {
+                if (string.IsNullOrWhiteSpace(toolId) || _toolRegistry.GetTool(toolId) is null)
+                    throw new ArgumentException(
+                        $"Child task '{name}': tool '{toolId}' is not available in the parent registry.");
+                set.Add(toolId);
+            }
+            allowedTools = set;
+        }
+
+        // Provider policy ceiling: children may only reference providers the parent offered.
+        var provider = _llmProvider;
+        if (task.ProviderName is not null)
+        {
+            if (options.ChildProviders is null ||
+                !options.ChildProviders.TryGetValue(task.ProviderName, out var named))
+            {
+                throw new ArgumentException(
+                    $"Child task '{name}': provider '{task.ProviderName}' is not in the parent-supplied ChildProviders policy.");
+            }
+            provider = named;
+        }
+
+        // Budget ceilings.
+        var turnCeiling = options.MaxTurnsPerChild ?? _maxTurns;
+        if (turnCeiling < 1)
+            throw new ArgumentException("MaxTurnsPerChild must be at least 1.");
+        var maxTurns = task.MaxTurns ?? turnCeiling;
+        if (maxTurns < 1 || maxTurns > turnCeiling)
+            throw new ArgumentException(
+                $"Child task '{name}': MaxTurns {maxTurns} is outside the parent ceiling of {turnCeiling}.");
+        var maxDuration = task.MaxDuration ?? options.MaxDurationPerChild;
+        if (maxDuration is { } d && d <= TimeSpan.Zero)
+            throw new ArgumentException($"Child task '{name}': MaxDuration must be positive.");
+        if (task.MaxDuration is { } requested &&
+            options.MaxDurationPerChild is { } durationCeiling &&
+            requested > durationCeiling)
+        {
+            throw new ArgumentException(
+                $"Child task '{name}': MaxDuration {requested} exceeds the parent ceiling of {durationCeiling}.");
+        }
+
+        return new ChildTaskPlan(
+            taskIndex,
+            name,
+            task.Objective,
+            task.RoleInstructions ?? DefaultChildSystemPrompt,
+            workingDirectory,
+            allowedTools,
+            provider,
+            maxTurns,
+            maxDuration);
+    }
+
+    private async Task<ChildTaskResult> RunOneChildAsync(
+        ChildTaskPlan plan,
+        string parentRunId,
+        ChildTurnBudget? budget,
+        SemaphoreSlim slots,
+        CancellationTokenSource batchCts,
+        Action<ChildAgentEvent> emit)
+    {
+        try
+        {
+            await slots.WaitAsync(batchCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled before this child ever started; it still gets a result slot.
+            return new ChildTaskResult
+            {
+                TaskIndex = plan.TaskIndex,
+                Name = plan.Name,
+                Status = ChildTaskStatus.Cancelled,
+                Response = "Cancelled before the child agent started.",
+                StopReason = "cancelled",
+            };
+        }
+
+        // From here on, NOTHING may fault the batch: the report promises one result per task.
+        // Setup failures (e.g. the workspace path colliding with an existing file) become a
+        // Failed result for this child only, leaving sibling results intact.
+        var budgeted = new BudgetedLlmProvider(plan.Provider, budget);
+        try
+        {
+            // WaitAsync(token) can complete via a slot released AFTER cancellation was requested
+            // (the release/cancel race inside SemaphoreSlim). Re-check here so a queued child
+            // observing cancellation never starts — the cancel happened-before the slot release,
+            // so this check is deterministic, not best-effort.
+            batchCts.Token.ThrowIfCancellationRequested();
+
+            using var childCts = CancellationTokenSource.CreateLinkedTokenSource(batchCts.Token);
+            if (plan.MaxDuration is { } deadline)
+                childCts.CancelAfter(deadline);
+
+            Directory.CreateDirectory(plan.WorkingDirectory);
+
+            var registry = plan.AllowedTools is null
+                ? _toolRegistry
+                : new ChildToolRegistry(_toolRegistry, plan.AllowedTools);
+            var executor = plan.AllowedTools is null
+                ? _toolExecutor
+                : new ChildToolExecutor(_toolExecutor, plan.AllowedTools);
+
+            // A fresh SimpleAgent with its own DefaultConversationManager: child histories are
+            // isolated from the parent and from each other. Children get the engine-default
+            // compressor rather than sharing the parent's instance across concurrent children.
+            using var child = new SimpleAgent(
+                budgeted,
+                registry,
+                executor,
+                systemPrompt: plan.SystemPrompt,
+                maxTurns: plan.MaxTurns,
+                workingDirectory: plan.WorkingDirectory,
+                logger: _logger,
+                maxOutputTokens: _maxOutputTokens,
+                maxToolResultChars: _maxToolResultChars,
+                maxContextTokens: _maxContextTokens,
+                enablePromptCaching: _enablePromptCaching,
+                extraBody: _extraBody,
+                maxImageBytes: _maxImageBytes);
+
+            child.ToolCalled += (_, e) => emit(new ChildAgentEvent
+            {
+                ParentRunId = parentRunId,
+                ChildName = plan.Name,
+                TaskIndex = plan.TaskIndex,
+                Kind = ChildAgentEventKind.ToolCalled,
+                ToolName = e.ToolName,
+                Timestamp = DateTimeOffset.UtcNow,
+            });
+
+            emit(new ChildAgentEvent
+            {
+                ParentRunId = parentRunId,
+                ChildName = plan.Name,
+                TaskIndex = plan.TaskIndex,
+                Kind = ChildAgentEventKind.Started,
+                Timestamp = DateTimeOffset.UtcNow,
+            });
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            ChildTaskResult childResult;
+            try
+            {
+                var result = await child.ProcessMessageAsync(plan.Objective, childCts.Token);
+                var status = result.Success
+                    ? ChildTaskStatus.Succeeded
+                    : budgeted.DeniedByBudget
+                        ? ChildTaskStatus.BudgetExceeded
+                        : ChildTaskStatus.Failed;
+                childResult = new ChildTaskResult
+                {
+                    TaskIndex = plan.TaskIndex,
+                    Name = plan.Name,
+                    Status = status,
+                    Response = result.Response,
+                    StopReason = result.StopReason,
+                    TurnCount = budgeted.DispatchedCalls,
+                    Duration = result.Duration,
+                };
+            }
+            catch (OperationCanceledException ex)
+            {
+                // ProcessMessageAsync surfaces cancellation as OperationCanceledException (after
+                // committing partial turn state). Attribute it precisely: batch/parent
+                // cancellation is Cancelled; the child's own deadline (it HAS one and its token
+                // fired) is a budget overrun; anything else — e.g. an HttpClient timeout
+                // surfacing as TaskCanceledException with no token cancelled — is a plain
+                // failure, never a phantom budget report.
+                var cancelledByBatch = batchCts.IsCancellationRequested;
+                var deadlineHit = !cancelledByBatch &&
+                                  plan.MaxDuration is not null &&
+                                  childCts.IsCancellationRequested;
+                childResult = new ChildTaskResult
+                {
+                    TaskIndex = plan.TaskIndex,
+                    Name = plan.Name,
+                    Status = cancelledByBatch
+                        ? ChildTaskStatus.Cancelled
+                        : deadlineHit
+                            ? ChildTaskStatus.BudgetExceeded
+                            : ChildTaskStatus.Failed,
+                    Response = cancelledByBatch
+                        ? "Cancelled while the child agent was running."
+                        : deadlineHit
+                            ? "The child agent exceeded its time budget."
+                            : $"Error: {ex.Message}",
+                    StopReason = cancelledByBatch
+                        ? "cancelled"
+                        : deadlineHit
+                            ? "time_budget_exceeded"
+                            : "error",
+                    TurnCount = budgeted.DispatchedCalls,
+                    Duration = stopwatch.Elapsed,
+                };
+            }
+            catch (Exception ex)
+            {
+                childResult = new ChildTaskResult
+                {
+                    TaskIndex = plan.TaskIndex,
+                    Name = plan.Name,
+                    Status = ChildTaskStatus.Failed,
+                    Response = $"Error: {ex.Message}",
+                    StopReason = "error",
+                    TurnCount = budgeted.DispatchedCalls,
+                    Duration = stopwatch.Elapsed,
+                };
+            }
+
+            emit(new ChildAgentEvent
+            {
+                ParentRunId = parentRunId,
+                ChildName = plan.Name,
+                TaskIndex = plan.TaskIndex,
+                Kind = ChildAgentEventKind.Completed,
+                Status = childResult.Status,
+                Timestamp = DateTimeOffset.UtcNow,
+            });
+
+            return childResult;
+        }
+        catch (OperationCanceledException) when (batchCts.IsCancellationRequested)
+        {
+            // Cancelled during setup, before the child agent's own cancel handling could run.
+            return new ChildTaskResult
+            {
+                TaskIndex = plan.TaskIndex,
+                Name = plan.Name,
+                Status = ChildTaskStatus.Cancelled,
+                Response = "Cancelled while the child agent was starting.",
+                StopReason = "cancelled",
+                TurnCount = budgeted.DispatchedCalls,
+            };
+        }
+        catch (Exception ex)
+        {
+            // Setup failed (e.g. the workspace path collides with an existing file). The batch
+            // report must still contain a result for every task, so this faults only this child.
+            return new ChildTaskResult
+            {
+                TaskIndex = plan.TaskIndex,
+                Name = plan.Name,
+                Status = ChildTaskStatus.Failed,
+                Response = $"Error: {ex.Message}",
+                StopReason = "error",
+                TurnCount = budgeted.DispatchedCalls,
+            };
+        }
+        finally
+        {
+            slots.Release();
+        }
+    }
+
     private async Task<SimpleAgentResult> ProcessMessageCoreAsync(
         Message userMsg,
         Action<AgentResponseDelta>? onResponseDelta,
