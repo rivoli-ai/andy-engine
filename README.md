@@ -30,6 +30,8 @@ planner/critic layer — the loop mirrors the pattern used by successful CLI age
 - **Andy.Tools integration** — a registry + executor of built-in tools (file, search, text, …) with
   per-run permission scoping (allowed paths, process/network toggles).
 - **Turn & token budgets** — bound each run with `maxTurns`, `maxOutputTokens`, `maxContextTokens`.
+- **Bounded continuation** — opt in to compact checkpoints and fresh per-window turn budgets while
+  enforcing global turn, window, elapsed-time, and no-progress ceilings.
 - **Context compression** — the per-request view is compressed to fit the token budget while the
   full conversation log is retained.
 - **Cancellation** — `ProcessMessageAsync` honors a `CancellationToken`.
@@ -114,10 +116,69 @@ Console.WriteLine(result.Success ? result.Response : $"Stopped: {result.StopReas
 - **`IToolExecutor`** (Andy.Tools) — validates and runs tool calls with the configured permissions.
 
 Useful `SimpleAgent` constructor options: `maxTurns`, `maxOutputTokens`, `maxToolResultChars`,
-`maxContextTokens`, `enablePromptCaching`, and `extraBody` (provider-specific request fields).
+`maxContextTokens`, `enablePromptCaching`, `extraBody` (provider-specific request fields), and
+`continuationPolicy`.
 
 `ProcessMessageAsync` returns a `SimpleAgentResult(bool Success, string Response, int TurnCount,
 TimeSpan Duration, string StopReason)`.
+
+## Bounded continuation
+
+`maxTurns` remains the hard limit for one request window. Long tasks can opt in to continuation by
+supplying an `AgentContinuationPolicy`; omitting it preserves the existing
+`max_turns_exceeded` behavior.
+
+```csharp
+using var agent = new SimpleAgent(
+    llm,
+    registry,
+    executor,
+    systemPrompt: "You are a helpful coding assistant.",
+    maxTurns: 10,
+    workingDirectory: Environment.CurrentDirectory,
+    continuationPolicy: new AgentContinuationPolicy
+    {
+        MaxTotalTurns = 40,
+        MaxContinuationWindows = 3,
+        MaxElapsedTime = TimeSpan.FromMinutes(20),
+        RecentToolCallRounds = 3,
+        EquivalentCheckpointLimit = 1,
+    });
+
+agent.ContinuationProgress += (_, progress) =>
+{
+    Console.WriteLine(
+        $"{progress.Kind}: window {progress.WindowNumber}, total turns {progress.TotalTurns}");
+};
+```
+
+At each eligible window boundary, the engine creates a compact checkpoint with the objective,
+completed tool work, observed outcomes, working-directory/task state, and remaining-work
+instructions. The next request view contains that checkpoint plus recent complete tool-call/result
+pairs. It does not execute those retained calls again. The authoritative conversation transcript
+continues to retain every original assistant tool call and result independently of the compact
+request view.
+
+The policy has independent hard ceilings:
+
+- `MaxTotalTurns` counts every LLM turn across all windows.
+- `MaxContinuationWindows` bounds both fresh windows and checkpoint/compaction operations after
+  the initial window.
+- `MaxElapsedTime` optionally cancels in-flight provider, tool, or checkpoint work when wall-clock
+  time expires.
+- `EquivalentCheckpointLimit` stops repeated or oscillating progress with
+  `continuation_no_progress`.
+
+Other continuation limit stop reasons are `continuation_total_turns_exceeded`,
+`continuation_windows_exceeded`, and `continuation_time_exceeded`. External cancellation still
+propagates as `OperationCanceledException` after the partial transcript is committed.
+
+Hosts can render `ContinuationProgress` events directly. Event kinds cover window start/completion,
+checkpoint creation, no-progress detection, bounded stops, and successful completion. An optional
+asynchronous `CheckpointFactory` can customize checkpoint text from immutable
+`AgentCheckpointContext` data; it receives the run cancellation token and must not execute tools.
+See [the bounded continuation design](docs/bounded-continuation.md) for the execution model,
+stop-reason table, event contract, and acceptance checklist.
 
 ## Integration with the Andy ecosystem
 
