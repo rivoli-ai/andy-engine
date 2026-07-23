@@ -632,6 +632,133 @@ public class SimpleAgent : IDisposable
         BuildContextFromConversation().AsReadOnly();
 
     /// <summary>
+    /// Exports a read-only, versioned snapshot of the conversation transcript (issue #32). The
+    /// snapshot deep-copies message content, tool calls and tool results; it holds no provider,
+    /// tool-executor, logger or cancellation state. Interrupted turns (which #37 now commits with
+    /// a null final answer) export faithfully and restore the same way.
+    /// </summary>
+    public TranscriptSnapshot ExportTranscript()
+    {
+        var turns = new List<TranscriptTurn>();
+        foreach (var turn in _conversationManager.Conversation.Turns)
+        {
+            // Newer Turn versions carry an authoritative ordered Messages sequence that
+            // supersedes the legacy AssistantMessage/ToolMessages members when non-empty.
+            IReadOnlyList<Message> interleaved;
+            Message? final;
+            if (turn.Messages is { Count: > 0 } ordered)
+            {
+                final = ordered[^1].Role == Role.Assistant && (ordered[^1].ToolCalls?.Count ?? 0) == 0
+                    ? ordered[^1]
+                    : null;
+                interleaved = final is null ? ordered : ordered.Take(ordered.Count - 1).ToList();
+            }
+            else
+            {
+                interleaved = turn.ToolMessages ?? (IReadOnlyList<Message>)Array.Empty<Message>();
+                final = turn.AssistantMessage;
+            }
+
+            turns.Add(new TranscriptTurn
+            {
+                User = TranscriptMessage.FromMessage(turn.UserOrSystemMessage
+                    ?? new Message { Role = Role.User, Content = string.Empty }),
+                Interleaved = interleaved.Select(TranscriptMessage.FromMessage).ToList(),
+                FinalAssistant = final is null ? null : TranscriptMessage.FromMessage(final),
+            });
+        }
+
+        return new TranscriptSnapshot { Turns = turns };
+    }
+
+    /// <summary>
+    /// Restores a previously exported transcript into this agent (issue #32). The agent must have
+    /// an EMPTY conversation (a freshly constructed agent, or one after <see cref="ClearHistory"/>
+    /// with the default manager) — restoring is not merging. The entire snapshot is validated
+    /// before any state is touched: an invalid snapshot throws and leaves the agent unmodified.
+    /// </summary>
+    /// <exception cref="ArgumentNullException">The snapshot is null.</exception>
+    /// <exception cref="NotSupportedException">The snapshot version is unsupported.</exception>
+    /// <exception cref="InvalidOperationException">This agent already has conversation history.</exception>
+    /// <exception cref="ArgumentException">Roles are invalid or tool-call correlation is broken.</exception>
+    public void RestoreTranscript(TranscriptSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.Version != TranscriptSnapshot.CurrentVersion)
+            throw new NotSupportedException(
+                $"Transcript version {snapshot.Version} is not supported (expected {TranscriptSnapshot.CurrentVersion}).");
+        if (_conversationManager.Conversation.Turns.Count > 0)
+            throw new InvalidOperationException(
+                "RestoreTranscript requires an empty conversation; restore into a fresh agent.");
+
+        // Validate and materialize EVERYTHING before mutating any agent state.
+        var restored = new List<Turn>();
+        for (var t = 0; t < snapshot.Turns.Count; t++)
+        {
+            var turn = snapshot.Turns[t];
+            if (turn.User is null || !turn.User.TryGetRole(out var userRole))
+                throw new ArgumentException($"Turn {t}: opening message has an invalid role '{turn.User?.Role}'.");
+            if (userRole is not (Role.User or Role.System))
+                throw new ArgumentException($"Turn {t}: opening message must be 'user' or 'system', got '{turn.User.Role}'.");
+
+            var knownCallIds = new HashSet<string>(StringComparer.Ordinal);
+            var interleaved = new List<Message>();
+            for (var i = 0; i < turn.Interleaved.Count; i++)
+            {
+                var msg = turn.Interleaved[i];
+                if (!msg.TryGetRole(out var role))
+                    throw new ArgumentException($"Turn {t}, message {i}: invalid role '{msg.Role}'.");
+
+                switch (role)
+                {
+                    case Role.Assistant:
+                        foreach (var tc in msg.ToolCalls)
+                            knownCallIds.Add(tc.Id);
+                        break;
+                    case Role.Tool:
+                        if (msg.ToolResults.Count == 0)
+                            throw new ArgumentException($"Turn {t}, message {i}: tool message has no tool results.");
+                        foreach (var tr in msg.ToolResults)
+                        {
+                            if (!knownCallIds.Contains(tr.CallId))
+                                throw new ArgumentException(
+                                    $"Turn {t}, message {i}: tool result '{tr.CallId}' has no preceding tool call in this turn.");
+                        }
+                        break;
+                    default:
+                        throw new ArgumentException(
+                            $"Turn {t}, message {i}: interleaved messages must be 'assistant' or 'tool', got '{msg.Role}'.");
+                }
+
+                interleaved.Add(msg.ToMessage(role));
+            }
+
+            Message? final = null;
+            if (turn.FinalAssistant is { } fa)
+            {
+                if (!fa.TryGetRole(out var finalRole) || finalRole != Role.Assistant)
+                    throw new ArgumentException($"Turn {t}: final message must have role 'assistant', got '{fa.Role}'.");
+                if (fa.ToolCalls.Count > 0)
+                    throw new ArgumentException(
+                        $"Turn {t}: final assistant message must not carry tool calls (they belong in the interleaved sequence).");
+                final = fa.ToMessage(Role.Assistant);
+            }
+
+            restored.Add(new Turn
+            {
+                UserOrSystemMessage = turn.User.ToMessage(userRole),
+                AssistantMessage = final,
+                ToolMessages = interleaved,
+            });
+        }
+
+        foreach (var turn in restored)
+            _conversationManager.AddTurn(turn);
+
+        _logger?.LogInformation("Restored transcript with {TurnCount} turn(s).", restored.Count);
+    }
+
+    /// <summary>
     /// Reconstructs a properly ordered flat message list from conversation turns.
     /// For each turn, emits: UserOrSystemMessage → ToolMessages (interleaved assistant+tool) → AssistantMessage (final).
     /// This ensures tool result messages are always preceded by their triggering assistant message with ToolCalls.
