@@ -22,6 +22,12 @@ public sealed class RunTestsTool : ToolBase
     private readonly int _maxInvocations;
     private int _used;
 
+    // SimpleAgent executes a turn's tool calls concurrently (Task.WhenAll). Serialize this
+    // tool's invocations: the _used check-then-act must not race (two calls with one use left
+    // would both launch Docker runs), and concurrent CaptureWorkingTreeDiffAsync calls would
+    // race each other's `git add -A` in the shared workspace.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
     public RunTestsTool(SweBenchInstance instance, string workspaceDir, SweTestRunner runner, int maxInvocations)
     {
         _instance = instance;
@@ -57,6 +63,20 @@ public sealed class RunTestsTool : ToolBase
     };
 
     protected override async Task<ToolResult> ExecuteInternalAsync(
+        Dictionary<string, object?> parameters, ToolExecutionContext context)
+    {
+        await _gate.WaitAsync(context.CancellationToken);
+        try
+        {
+            return await ExecuteSerializedAsync(parameters, context);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<ToolResult> ExecuteSerializedAsync(
         Dictionary<string, object?> parameters, ToolExecutionContext context)
     {
         if (_used >= _maxInvocations)

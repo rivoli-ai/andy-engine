@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Text;
 using Andy.Engine.SweBench.Grading;
 using Andy.Engine.SweBench.Model;
 
@@ -220,13 +219,13 @@ public sealed class SweWorkspaceManager
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var p = new Process { StartInfo = psi };
-        var so = new StringBuilder();
-        var se = new StringBuilder();
-        p.OutputDataReceived += (_, e) => { if (e.Data is not null) so.AppendLine(e.Data); };
-        p.ErrorDataReceived += (_, e) => { if (e.Data is not null) se.AppendLine(e.Data); };
         p.Start();
-        p.BeginOutputReadLine();
-        p.BeginErrorReadLine();
+        // ReadToEndAsync drains each pipe to EOF, so unlike the BeginOutputReadLine event
+        // pattern there is no window where WaitForExitAsync returns while buffered output
+        // (e.g. the tail of a large `git diff --cached`) is still in flight — a truncated
+        // model patch later fails `git apply` and grades a correct fix as unapplied.
+        var stdoutTask = p.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = p.StandardError.ReadToEndAsync(ct);
         try
         {
             await p.WaitForExitAsync(ct);
@@ -235,9 +234,12 @@ public sealed class SweWorkspaceManager
         {
             // Don't leave an orphaned git process (e.g. a long clone) running after a timeout.
             try { p.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            // Let the readers observe the closed pipes so no task fault goes unobserved.
+            try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None); }
+            catch { /* best effort */ }
             throw;
         }
-        return (so.ToString(), se.ToString(), p.ExitCode);
+        return (await stdoutTask, await stderrTask, p.ExitCode);
     }
 
     private static string Sanitize(string s) => string.Join("_", s.Split(Path.GetInvalidFileNameChars().Append('/').ToArray()));

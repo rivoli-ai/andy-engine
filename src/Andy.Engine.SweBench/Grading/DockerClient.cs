@@ -66,8 +66,12 @@ public sealed class DockerClient : IDockerClient
         using var process = new Process { StartInfo = psi };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
-        using var outDone = new SemaphoreSlim(0, 1);
-        using var errDone = new SemaphoreSlim(0, 1);
+        // NOT disposed: if a drain wait below times out, the async output readers can still fire
+        // on a threadpool thread after this method returns, and releasing a disposed semaphore
+        // would throw ObjectDisposedException there. SemaphoreSlim holds no unmanaged resources
+        // unless AvailableWaitHandle is used, so skipping Dispose is safe.
+        var outDone = new SemaphoreSlim(0, 1);
+        var errDone = new SemaphoreSlim(0, 1);
 
         process.OutputDataReceived += (_, e) =>
         {
@@ -98,10 +102,20 @@ public sealed class DockerClient : IDockerClient
         {
             await process.WaitForExitAsync(timeoutCts.Token);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            timedOut = true;
+            // Timeout AND caller cancellation both land here. In both cases the container must
+            // be killed — propagating a caller's cancellation without killing would leave the
+            // `docker run` (e.g. a 30-minute test suite) executing in the background.
             TryKill(process);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // Drain the readers before rethrowing so late output events can't race.
+                await outDone.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+                await errDone.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+                throw;
+            }
+            timedOut = true;
         }
 
         // Drain async readers so we don't lose buffered output.
