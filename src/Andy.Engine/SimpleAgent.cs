@@ -34,6 +34,7 @@ public class SimpleAgent : IDisposable
     private readonly string _workingDirectory;
     private readonly IReadOnlyDictionary<string, object?>? _extraBody;
     private readonly int _maxImageBytes;
+    private readonly AgentContinuationPolicy? _continuationPolicy;
     private IConversationManager _conversationManager;
     // True when the agent created its own DefaultConversationManager (no caller-supplied one).
     // Only an agent-owned manager may be replaced by ClearHistory().
@@ -54,7 +55,8 @@ public class SimpleAgent : IDisposable
         IContextCompressor? contextCompressor = null,
         bool enablePromptCaching = true,
         IReadOnlyDictionary<string, object?>? extraBody = null,
-        int maxImageBytes = MultimodalMessage.DefaultMaxImageBytes)
+        int maxImageBytes = MultimodalMessage.DefaultMaxImageBytes,
+        AgentContinuationPolicy? continuationPolicy = null)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -68,6 +70,8 @@ public class SimpleAgent : IDisposable
         _enablePromptCaching = enablePromptCaching;
         _extraBody = extraBody;
         _maxImageBytes = maxImageBytes > 0 ? maxImageBytes : MultimodalMessage.DefaultMaxImageBytes;
+        ValidateContinuationPolicy(continuationPolicy, maxTurns);
+        _continuationPolicy = continuationPolicy;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _ownsConversationManager = conversationManager is null;
@@ -89,6 +93,13 @@ public class SimpleAgent : IDisposable
     /// model will see. Not raised for a call aborted by cancellation.
     /// </summary>
     public event EventHandler<ToolCalledEventArgs>? ToolCalled;
+
+    /// <summary>
+    /// Structured window/checkpoint lifecycle events. Raised only when an
+    /// <see cref="AgentContinuationPolicy"/> was supplied. Event consumers are advisory: an
+    /// exception thrown by a subscriber is logged and does not fault the agent run.
+    /// </summary>
+    public event EventHandler<AgentContinuationEventArgs>? ContinuationProgress;
 
     /// <summary>
     /// Process a user message and return a response.
@@ -603,8 +614,9 @@ public class SimpleAgent : IDisposable
         // per-request VIEW is compressed.
         var contextMessages = BuildRequestContext();
 
-        // In-flight messages for the current processing loop (not yet committed as a Turn)
-        var inFlightMessages = new List<Message> { userMsg };
+        // Request-view messages for the current turn-budget window. Continuation replaces this
+        // compact view at a boundary; the full audit list below is never replaced or truncated.
+        var requestWindowMessages = new List<Message> { userMsg };
         // Tracks ALL intermediate messages in order: assistant(tool_calls), tool results, assistant(tool_calls), tool results, ...
         // The final assistant message is NOT included here — it goes in Turn.AssistantMessage
         var allInterleavedMessages = new List<Message>();
@@ -618,7 +630,20 @@ public class SimpleAgent : IDisposable
         var wrapUpNudgeSent = false;
 
         var turnCount = 0;
+        var windowTurnCount = 0;
+        var windowNumber = 1;
+        var continuationsUsed = 0;
+        var windowAuditStart = 0;
+        var checkpointOccurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+        var continuationRunId = Guid.NewGuid().ToString("N");
         var startTime = DateTime.UtcNow;
+        var maxElapsed = _continuationPolicy?.MaxElapsedTime;
+        using var elapsedCts = maxElapsed is not null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        if (elapsedCts is not null)
+            elapsedCts.CancelAfter(maxElapsed!.Value);
+        var runToken = elapsedCts?.Token ?? cancellationToken;
         // Set once the turn has been recorded in the conversation manager, so the interrupted-turn
         // commit in the catch paths cannot double-record it.
         var turnCommitted = false;
@@ -646,33 +671,173 @@ public class SimpleAgent : IDisposable
             }
         }
 
+        void EmitContinuation(
+            AgentContinuationEventKind kind,
+            string? checkpoint = null,
+            string? stopReason = null)
+        {
+            if (_continuationPolicy is null || ContinuationProgress is null)
+                return;
+
+            try
+            {
+                ContinuationProgress(this, new AgentContinuationEventArgs
+                {
+                    RunId = continuationRunId,
+                    Kind = kind,
+                    WindowNumber = windowNumber,
+                    TotalTurns = turnCount,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Checkpoint = checkpoint,
+                    StopReason = stopReason,
+                });
+            }
+            catch (Exception eventEx)
+            {
+                _logger?.LogWarning(eventEx, "Continuation event consumer threw.");
+            }
+        }
+
+        SimpleAgentResult StopRun(string reason, string response)
+        {
+            CommitInterruptedTurn();
+            EmitContinuation(AgentContinuationEventKind.Stopped, stopReason: reason);
+            return new SimpleAgentResult(
+                Success: false,
+                Response: response,
+                TurnCount: turnCount,
+                Duration: DateTime.UtcNow - startTime,
+                StopReason: reason);
+        }
+
         try
         {
-            while (turnCount < _maxTurns)
+            EmitContinuation(AgentContinuationEventKind.WindowStarted);
+
+            while (true)
             {
+                if (_continuationPolicy is not null &&
+                    turnCount >= _continuationPolicy.MaxTotalTurns)
+                {
+                    return StopRun(
+                        "continuation_total_turns_exceeded",
+                        $"Reached the continuation ceiling of {_continuationPolicy.MaxTotalTurns} total turns.");
+                }
+
+                if (windowTurnCount >= _maxTurns)
+                {
+                    if (_continuationPolicy is null)
+                    {
+                        _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
+                        return StopRun(
+                            "max_turns_exceeded",
+                            $"Reached the maximum of {_maxTurns} tool-call turns before completing the request.");
+                    }
+
+                    EmitContinuation(AgentContinuationEventKind.WindowCompleted);
+
+                    if (continuationsUsed >= _continuationPolicy.MaxContinuationWindows)
+                    {
+                        return StopRun(
+                            "continuation_windows_exceeded",
+                            $"Reached the continuation ceiling of {_continuationPolicy.MaxContinuationWindows} continued windows.");
+                    }
+
+                    runToken.ThrowIfCancellationRequested();
+                    var windowAudit = allInterleavedMessages
+                        .Skip(windowAuditStart)
+                        .ToList();
+                    var checkpointContext = BuildCheckpointContext(
+                        userMsg,
+                        windowNumber,
+                        turnCount,
+                        allInterleavedMessages);
+                    var checkpoint = _continuationPolicy.CheckpointFactory is null
+                        ? BuildDefaultCheckpoint(checkpointContext)
+                        : await _continuationPolicy.CheckpointFactory(checkpointContext, runToken);
+                    runToken.ThrowIfCancellationRequested();
+
+                    if (string.IsNullOrWhiteSpace(checkpoint))
+                        throw new InvalidOperationException("The continuation checkpoint factory returned an empty checkpoint.");
+
+                    checkpoint = TruncateCheckpoint(checkpoint, _continuationPolicy.MaxCheckpointChars);
+                    EmitContinuation(AgentContinuationEventKind.CheckpointCreated, checkpoint);
+
+                    var progressFingerprint = BuildProgressFingerprint(windowAudit);
+                    if (checkpointOccurrences.TryGetValue(progressFingerprint, out var priorOccurrences))
+                    {
+                        if (priorOccurrences >= _continuationPolicy.EquivalentCheckpointLimit)
+                        {
+                            EmitContinuation(
+                                AgentContinuationEventKind.NoProgressDetected,
+                                checkpoint,
+                                "continuation_no_progress");
+                            return StopRun(
+                                "continuation_no_progress",
+                                "Stopped continuation because progress returned to an equivalent prior checkpoint.");
+                        }
+                        checkpointOccurrences[progressFingerprint] = priorOccurrences + 1;
+                    }
+                    else
+                    {
+                        checkpointOccurrences[progressFingerprint] = 1;
+                    }
+
+                    requestWindowMessages = new List<Message>
+                    {
+                        new()
+                        {
+                            Role = Role.User,
+                            Content = checkpoint,
+                        },
+                    };
+                    requestWindowMessages.AddRange(
+                        SelectRecentCompleteToolRounds(
+                            windowAudit,
+                            _continuationPolicy.RecentToolCallRounds));
+
+                    continuationsUsed++;
+                    windowNumber++;
+                    windowTurnCount = 0;
+                    windowAuditStart = allInterleavedMessages.Count;
+                    wrapUpNudgeSent = false;
+                    finalAssistantMessage = null;
+                    lastAssistantWasInterleaved = false;
+                    EmitContinuation(AgentContinuationEventKind.WindowStarted, checkpoint);
+                    continue;
+                }
+
                 turnCount++;
-                _logger?.LogDebug("Turn {TurnCount}/{MaxTurns}", turnCount, _maxTurns);
+                windowTurnCount++;
+                _logger?.LogDebug(
+                    "Turn {TurnCount} (window {WindowNumber}, {WindowTurn}/{MaxTurns})",
+                    turnCount,
+                    windowNumber,
+                    windowTurnCount,
+                    _maxTurns);
 
                 // As we approach the turn budget, nudge the model once to wrap up and stop
                 // exploring. This often lets it produce a final answer before the hard limit,
                 // avoiding a "max turns exceeded" stop. Mirrors the output-truncation nudge: the
                 // message is added to both the in-flight request and the interleaved log so the
                 // persisted turn faithfully reflects what was sent.
-                if (!wrapUpNudgeSent && ShouldSendWrapUpNudge(turnCount, _maxTurns))
+                if (_continuationPolicy is null &&
+                    !wrapUpNudgeSent &&
+                    ShouldSendWrapUpNudge(windowTurnCount, _maxTurns))
                 {
                     _logger?.LogInformation(
                         "Approaching turn budget ({TurnCount}/{MaxTurns}); nudging the model to wrap up.",
-                        turnCount, _maxTurns);
+                        windowTurnCount, _maxTurns);
 
                     var wrapUp = new Message
                     {
                         Role = Role.User,
-                        Content = $"You are on turn {turnCount} of a maximum {_maxTurns} tool-call turns. "
+                        Content = $"You are on turn {windowTurnCount} of a maximum {_maxTurns} tool-call turns. "
                                 + "Stop exploring and produce your final answer now, making only the "
                                 + "essential remaining tool calls. If you cannot fully finish, summarize "
                                 + "what you have changed and what still remains.",
                     };
-                    inFlightMessages.Add(wrapUp);
+                    requestWindowMessages.Add(wrapUp);
                     allInterleavedMessages.Add(wrapUp);
                     wrapUpNudgeSent = true;
                 }
@@ -680,11 +845,11 @@ public class SimpleAgent : IDisposable
                 // Build tool declarations from registry
                 var toolDeclarations = BuildToolDeclarations();
 
-                // Make LLM request with prior context + in-flight messages, re-fitted to the
+                // Make LLM request with prior context + this window's request view, re-fitted to the
                 // context token budget EVERY turn: in-flight tool results accumulate up to
                 // _maxToolResultChars per call, so a long tool loop would otherwise overflow the
                 // provider context mid-run even though the committed history fit at loop entry.
-                var allMessages = FitRequestToBudget(contextMessages, inFlightMessages);
+                var allMessages = FitRequestToBudget(contextMessages, requestWindowMessages);
                 var request = new LlmRequest
                 {
                     Messages = allMessages,
@@ -715,13 +880,13 @@ public class SimpleAgent : IDisposable
                 }
 
                 var (response, streamedTextThisTurn) =
-                    await GetLlmResponseAsync(request, turnCount, onResponseDelta, cancellationToken);
+                    await GetLlmResponseAsync(request, turnCount, onResponseDelta, runToken);
 
                 _logger?.LogInformation("LLM response - Content: '{Content}', HasToolCalls: {HasToolCalls}, FinishReason: {FinishReason}",
                     response.Content, response.HasToolCalls, response.FinishReason);
 
-                // Add assistant message to in-flight messages
-                inFlightMessages.Add(response.AssistantMessage);
+                // Add assistant message to this window's request view.
+                requestWindowMessages.Add(response.AssistantMessage);
                 finalAssistantMessage = response.AssistantMessage;
                 lastAssistantWasInterleaved = false;
 
@@ -753,7 +918,7 @@ public class SimpleAgent : IDisposable
                     // as that call's error result (isolation); OperationCanceledException is NOT
                     // captured — it is rethrown so it cancels the whole run.
                     var toolTasks = response.ToolCalls
-                        .Select(toolCall => ExecuteToolCallAsync(toolCall, cancellationToken))
+                        .Select(toolCall => ExecuteToolCallAsync(toolCall, runToken))
                         .ToList();
 
                     // Task.WhenAll surfaces the first faulting task's exception; since each task
@@ -762,10 +927,10 @@ public class SimpleAgent : IDisposable
                     // cancellation — which we want to propagate.
                     var toolResults = (await Task.WhenAll(toolTasks)).ToList();
 
-                    // Add tool results to in-flight messages and track them for the Turn.
+                    // Add tool results to the compact request view and full audit transcript.
                     // toolResults is already in original tool-call order (WhenAll preserves the
                     // input task order in its result array).
-                    inFlightMessages.AddRange(toolResults);
+                    requestWindowMessages.AddRange(toolResults);
                     allInterleavedMessages.AddRange(toolResults);
 
                     // Continue loop to get LLM's response to tool results
@@ -786,7 +951,7 @@ public class SimpleAgent : IDisposable
                     // Record the partial assistant message and the nudge in the interleaved log
                     // so the persisted Turn (and any later replay/compaction of it) faithfully
                     // reflects what was actually sent to the model. Without this, both messages
-                    // would live only in inFlightMessages and be dropped from conversation
+                    // would live only in requestWindowMessages and be dropped from conversation
                     // history. The interleaved log is therefore the single source of truth for
                     // everything between the user message and the final answer.
                     allInterleavedMessages.Add(response.AssistantMessage);
@@ -803,7 +968,7 @@ public class SimpleAgent : IDisposable
                                 + "produced a tool call or a complete answer. Continue from where you "
                                 + "left off and make the necessary tool calls to apply your change.",
                     };
-                    inFlightMessages.Add(nudge);
+                    requestWindowMessages.Add(nudge);
                     allInterleavedMessages.Add(nudge);
                     continue;
                 }
@@ -830,6 +995,7 @@ public class SimpleAgent : IDisposable
                 turnCommitted = true;
 
                 var duration = DateTime.UtcNow - startTime;
+                EmitContinuation(AgentContinuationEventKind.Completed);
 
                 return new SimpleAgentResult(
                     Success: true,
@@ -839,49 +1005,14 @@ public class SimpleAgent : IDisposable
                     StopReason: response.FinishReason ?? "completed"
                 );
             }
-
-            // Exhausted max turns — still record the turn so conversation state is preserved.
-            //
-            // Every iteration of the loop ends in either `continue` (tool calls or output-limit
-            // truncation, both of which append the assistant message to allInterleavedMessages)
-            // or `return` (a genuine final answer, which exits this method). So when the loop
-            // falls through here, the last assistant message is ALREADY inside
-            // allInterleavedMessages. Storing it again as Turn.AssistantMessage would duplicate
-            // it in the reconstructed history (BuildContextFromConversation emits ToolMessages
-            // then AssistantMessage), producing a dangling/duplicated assistant message. There
-            // is no genuine final answer at max-turns, so leave it null in that case.
-            _conversationManager.AddTurn(new Turn
-            {
-                UserOrSystemMessage = userMsg,
-                AssistantMessage = lastAssistantWasInterleaved ? null : finalAssistantMessage,
-                ToolMessages = new List<Message>(allInterleavedMessages)
-            });
-            turnCommitted = true;
-
-            _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
-
-            // Log the full conversation for debugging, but DO NOT return it as the response.
-            // Previously the entire history — every raw tool-result payload, embedded CRLFs and all —
-            // was packed into Response, and callers (e.g. the CLI feed) rendered it verbatim, flooding
-            // the UI with tool JSON. The detail stays in the logs; callers get a concise message.
-            if (_logger?.IsEnabled(LogLevel.Warning) == true)
-            {
-                var allConversationMessages = _conversationManager.Conversation.ToChronoMessages().ToList();
-                for (int i = 0; i < allConversationMessages.Count; i++)
-                {
-                    var msg = allConversationMessages[i];
-                    _logger.LogWarning("  [{Index}] {Role}: {Content} (ToolCalls: {ToolCallCount})",
-                        i, msg.Role, msg.Content ?? "(empty)", msg.ToolCalls?.Count ?? 0);
-                }
-            }
-
-            return new SimpleAgentResult(
-                Success: false,
-                Response: $"Reached the maximum of {_maxTurns} tool-call turns before completing the request.",
-                TurnCount: turnCount,
-                Duration: DateTime.UtcNow - startTime,
-                StopReason: "max_turns_exceeded"
-            );
+        }
+        catch (OperationCanceledException)
+            when (!cancellationToken.IsCancellationRequested &&
+                  elapsedCts?.IsCancellationRequested == true)
+        {
+            return StopRun(
+                "continuation_time_exceeded",
+                $"Reached the continuation elapsed-time ceiling of {_continuationPolicy!.MaxElapsedTime}.");
         }
         catch (OperationCanceledException)
         {
@@ -921,6 +1052,242 @@ public class SimpleAgent : IDisposable
                 StopReason: $"error: {errorMessage}"
             );
         }
+    }
+
+    private static void ValidateContinuationPolicy(
+        AgentContinuationPolicy? policy,
+        int maxTurns)
+    {
+        if (policy is null)
+            return;
+        if (maxTurns < 1)
+            throw new ArgumentException(
+                "maxTurns must be at least 1 when continuation is enabled.",
+                nameof(maxTurns));
+        if (policy.MaxTotalTurns < 1)
+            throw new ArgumentException(
+                "MaxTotalTurns must be at least 1.",
+                nameof(policy));
+        if (policy.MaxContinuationWindows < 1)
+            throw new ArgumentException(
+                "MaxContinuationWindows must be at least 1.",
+                nameof(policy));
+        if (policy.MaxElapsedTime is { } elapsed && elapsed <= TimeSpan.Zero)
+            throw new ArgumentException(
+                "MaxElapsedTime must be positive.",
+                nameof(policy));
+        if (policy.RecentToolCallRounds < 1)
+            throw new ArgumentException(
+                "RecentToolCallRounds must be at least 1.",
+                nameof(policy));
+        if (policy.MaxCheckpointChars < 4_096)
+            throw new ArgumentException(
+                "MaxCheckpointChars must be at least 4096.",
+                nameof(policy));
+        if (policy.EquivalentCheckpointLimit < 1)
+            throw new ArgumentException(
+                "EquivalentCheckpointLimit must be at least 1.",
+                nameof(policy));
+    }
+
+    private AgentCheckpointContext BuildCheckpointContext(
+        Message userMessage,
+        int completedWindow,
+        int totalTurns,
+        IReadOnlyList<Message> auditMessages)
+    {
+        var calls = new Dictionary<string, Andy.Model.Model.ToolCall>(StringComparer.Ordinal);
+        var outcomes = new List<AgentCheckpointToolOutcome>();
+
+        foreach (var message in auditMessages)
+        {
+            if (message.ToolCalls is { Count: > 0 })
+            {
+                foreach (var call in message.ToolCalls)
+                    calls[call.Id] = call;
+            }
+
+            if (message.ToolResults is not { Count: > 0 })
+                continue;
+
+            foreach (var result in message.ToolResults)
+            {
+                calls.TryGetValue(result.CallId, out var call);
+                outcomes.Add(new AgentCheckpointToolOutcome
+                {
+                    ToolName = call?.Name ?? result.Name ?? "unknown",
+                    ArgumentsJson = call?.ArgumentsJson ?? "{}",
+                    ResultJson = result.ResultJson ?? message.Content ?? string.Empty,
+                    IsError = result.IsError,
+                });
+            }
+        }
+
+        return new AgentCheckpointContext
+        {
+            Objective = userMessage.Content ?? "(structured user objective)",
+            WorkingDirectory = _workingDirectory,
+            CompletedWindow = completedWindow,
+            TotalTurns = totalTurns,
+            ToolOutcomes = outcomes.AsReadOnly(),
+        };
+    }
+
+    private static string BuildDefaultCheckpoint(AgentCheckpointContext context)
+    {
+        const int maxListedOutcomes = 3;
+        const int maxFieldChars = 200;
+        var recent = context.ToolOutcomes.TakeLast(maxListedOutcomes).ToList();
+        var successful = recent.Where(o => !o.IsError).ToList();
+
+        var checkpoint = new StringBuilder();
+        checkpoint.AppendLine("[Continuation checkpoint]");
+        checkpoint.AppendLine("Objective:");
+        checkpoint.AppendLine(LimitField(context.Objective, 700));
+        checkpoint.AppendLine();
+        checkpoint.AppendLine("Completed work:");
+        if (successful.Count == 0)
+        {
+            checkpoint.AppendLine("- No successful tool outcome was recorded in the retained checkpoint data.");
+        }
+        else
+        {
+            foreach (var outcome in successful)
+            {
+                checkpoint.Append("- ")
+                    .Append(outcome.ToolName)
+                    .Append(" completed with arguments ")
+                    .AppendLine(LimitField(outcome.ArgumentsJson, maxFieldChars));
+            }
+        }
+
+        checkpoint.AppendLine();
+        checkpoint.AppendLine("Observed tool outcomes:");
+        if (recent.Count == 0)
+        {
+            checkpoint.AppendLine("- No tool outcomes were recorded; retain the objective and continue carefully.");
+        }
+        else
+        {
+            foreach (var outcome in recent)
+            {
+                checkpoint.Append("- ")
+                    .Append(outcome.ToolName)
+                    .Append(outcome.IsError ? " failed: " : " succeeded: ")
+                    .AppendLine(LimitField(outcome.ResultJson, maxFieldChars));
+            }
+        }
+
+        checkpoint.AppendLine();
+        checkpoint.AppendLine("Current repository/task state:");
+        checkpoint.Append("- Working directory: ").AppendLine(context.WorkingDirectory);
+        checkpoint.Append("- Completed window: ").Append(context.CompletedWindow)
+            .Append("; total LLM turns used: ").AppendLine(context.TotalTurns.ToString());
+        checkpoint.AppendLine("- The outcomes above are authoritative. Their tool calls already executed and their side effects may be present.");
+        checkpoint.AppendLine();
+        checkpoint.AppendLine("Remaining work:");
+        checkpoint.AppendLine("- Re-evaluate the objective against the recorded outcomes and current repository state.");
+        checkpoint.AppendLine("- Continue only unfinished work. Do not repeat completed tool calls merely to reconstruct history.");
+        checkpoint.AppendLine("- Verify the final result before answering.");
+        return checkpoint.ToString().TrimEnd();
+    }
+
+    private static string LimitField(string value, int maxChars)
+    {
+        var compact = string.Join(
+            " ",
+            value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return compact.Length <= maxChars
+            ? compact
+            : compact[..maxChars] + " [truncated]";
+    }
+
+    private static string TruncateCheckpoint(string checkpoint, int maxChars)
+    {
+        if (checkpoint.Length <= maxChars)
+            return checkpoint;
+        const string marker = "\n[Checkpoint truncated to the configured limit.]";
+        return checkpoint[..(maxChars - marker.Length)] + marker;
+    }
+
+    private static string BuildProgressFingerprint(IReadOnlyList<Message> windowMessages)
+    {
+        var calls = new Dictionary<string, Andy.Model.Model.ToolCall>(StringComparer.Ordinal);
+        var components = new List<string>();
+
+        foreach (var message in windowMessages)
+        {
+            if (message.ToolCalls is { Count: > 0 })
+            {
+                foreach (var call in message.ToolCalls)
+                    calls[call.Id] = call;
+            }
+
+            if (message.ToolResults is not { Count: > 0 })
+                continue;
+
+            foreach (var result in message.ToolResults)
+            {
+                calls.TryGetValue(result.CallId, out var call);
+                components.Add(NormalizeCheckpointText(
+                    $"{call?.Name ?? result.Name}|{call?.ArgumentsJson}|{result.IsError}|{result.ResultJson}"));
+            }
+        }
+
+        if (components.Count == 0)
+        {
+            components.AddRange(windowMessages
+                .Where(m => m.Role == Role.Assistant)
+                .Select(m => NormalizeCheckpointText(m.Content ?? string.Empty)));
+        }
+
+        return string.Join("\n", components);
+    }
+
+    private static string NormalizeCheckpointText(string value) =>
+        string.Join(
+            " ",
+            value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        .ToUpperInvariant();
+
+    private static IReadOnlyList<Message> SelectRecentCompleteToolRounds(
+        IReadOnlyList<Message> windowMessages,
+        int maxRounds)
+    {
+        var rounds = new List<IReadOnlyList<Message>>();
+
+        for (var i = 0; i < windowMessages.Count; i++)
+        {
+            var assistant = windowMessages[i];
+            if (assistant.Role != Role.Assistant || assistant.ToolCalls is not { Count: > 0 })
+                continue;
+
+            var callIds = assistant.ToolCalls.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+            var observedResults = new HashSet<string>(StringComparer.Ordinal);
+            var round = new List<Message> { assistant };
+            var j = i + 1;
+            while (j < windowMessages.Count && windowMessages[j].Role == Role.Tool)
+            {
+                var toolMessage = windowMessages[j];
+                foreach (var result in toolMessage.ToolResults ?? [])
+                {
+                    if (callIds.Contains(result.CallId))
+                        observedResults.Add(result.CallId);
+                }
+                round.Add(toolMessage);
+                j++;
+            }
+
+            if (callIds.SetEquals(observedResults))
+                rounds.Add(round);
+            i = j - 1;
+        }
+
+        return rounds
+            .TakeLast(maxRounds)
+            .SelectMany(round => round)
+            .ToList()
+            .AsReadOnly();
     }
 
     /// <summary>
