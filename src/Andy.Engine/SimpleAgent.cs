@@ -33,6 +33,7 @@ public class SimpleAgent : IDisposable
     private readonly bool _enablePromptCaching;
     private readonly string _workingDirectory;
     private readonly IReadOnlyDictionary<string, object?>? _extraBody;
+    private readonly int _maxImageBytes;
     private IConversationManager _conversationManager;
     // True when the agent created its own DefaultConversationManager (no caller-supplied one).
     // Only an agent-owned manager may be replaced by ClearHistory().
@@ -52,7 +53,8 @@ public class SimpleAgent : IDisposable
         int maxContextTokens = 120_000,
         IContextCompressor? contextCompressor = null,
         bool enablePromptCaching = true,
-        IReadOnlyDictionary<string, object?>? extraBody = null)
+        IReadOnlyDictionary<string, object?>? extraBody = null,
+        int maxImageBytes = MultimodalMessage.DefaultMaxImageBytes)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -65,6 +67,7 @@ public class SimpleAgent : IDisposable
         _contextCompressor = contextCompressor ?? new SmartCompressor();
         _enablePromptCaching = enablePromptCaching;
         _extraBody = extraBody;
+        _maxImageBytes = maxImageBytes > 0 ? maxImageBytes : MultimodalMessage.DefaultMaxImageBytes;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _ownsConversationManager = conversationManager is null;
@@ -111,7 +114,7 @@ public class SimpleAgent : IDisposable
     /// overload. The callback is invoked synchronously on the processing loop, so no events are
     /// delivered after the returned task completes (including on cancellation).
     /// </summary>
-    public async Task<SimpleAgentResult> ProcessMessageAsync(
+    public Task<SimpleAgentResult> ProcessMessageAsync(
         string userMessage,
         Action<AgentResponseDelta>? onResponseDelta,
         CancellationToken cancellationToken = default)
@@ -119,18 +122,76 @@ public class SimpleAgent : IDisposable
         if (string.IsNullOrWhiteSpace(userMessage))
             throw new ArgumentException("User message cannot be empty", nameof(userMessage));
 
-        _logger?.LogInformation("Processing user message: {Message}", userMessage);
+        return ProcessMessageCoreAsync(
+            new Message { Role = Role.User, Content = userMessage },
+            onResponseDelta,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Process a structured multimodal user message (issue #35). See the streaming overload for
+    /// the full contract.
+    /// </summary>
+    public Task<SimpleAgentResult> ProcessMessageAsync(
+        IReadOnlyList<MessagePart> messageParts,
+        CancellationToken cancellationToken = default) =>
+        ProcessMessageAsync(messageParts, onResponseDelta: null, cancellationToken);
+
+    /// <summary>
+    /// Process a structured multimodal user message — ordered <see cref="TextPart"/> and
+    /// <see cref="ImagePart"/> content (issue #35) — optionally streaming the response like the
+    /// string overload.
+    ///
+    /// The ordered part list is preserved verbatim on the user message (see
+    /// <see cref="MultimodalMessage"/>) through tool rounds, conversation history, the compressed
+    /// request view, and transcript snapshot/restore; <see cref="Message.Content"/> carries the
+    /// concatenated text parts for part-unaware consumers. Image parts are validated up front:
+    /// image/* media type required, exactly one source (raw bytes or an absolute http(s)/data:
+    /// URI), each bounded by the constructor's maxImageBytes. Loading files into parts stays at
+    /// the client boundary.
+    ///
+    /// When the list contains image parts, the provider must be an
+    /// <see cref="IVisionCapableLlmProvider"/> whose active model accepts image input; otherwise
+    /// this throws <see cref="NotSupportedException"/> BEFORE dispatch — an image is never
+    /// silently discarded by sending a text-only rendering of the message.
+    /// </summary>
+    /// <exception cref="ArgumentException">The part list is empty, has unsupported or malformed
+    /// parts, or an image exceeds the size bound.</exception>
+    /// <exception cref="NotSupportedException">Image parts were supplied but the provider cannot
+    /// deliver image content.</exception>
+    public async Task<SimpleAgentResult> ProcessMessageAsync(
+        IReadOnlyList<MessagePart> messageParts,
+        Action<AgentResponseDelta>? onResponseDelta,
+        CancellationToken cancellationToken = default)
+    {
+        var userMsg = MultimodalMessage.BuildUserMessage(messageParts, _maxImageBytes);
+
+        if (MultimodalMessage.HasImageParts(userMsg) && !await ProviderAcceptsImagesAsync(cancellationToken))
+        {
+            throw new NotSupportedException(
+                $"Provider '{_llmProvider.Name}' cannot deliver image content to its active model; " +
+                "the message was not sent (images are never silently discarded). Use a provider that " +
+                "implements IVisionCapableLlmProvider and reports image support.");
+        }
+
+        return await ProcessMessageCoreAsync(userMsg, onResponseDelta, cancellationToken);
+    }
+
+    private async ValueTask<bool> ProviderAcceptsImagesAsync(CancellationToken cancellationToken) =>
+        _llmProvider is IVisionCapableLlmProvider vision &&
+        await vision.SupportsImageInputAsync(cancellationToken);
+
+    private async Task<SimpleAgentResult> ProcessMessageCoreAsync(
+        Message userMsg,
+        Action<AgentResponseDelta>? onResponseDelta,
+        CancellationToken cancellationToken)
+    {
+        _logger?.LogInformation("Processing user message: {Message}", userMsg.Content);
 
         // Prior context from conversation turns (properly interleaved), compressed to fit the
         // per-request token budget. The full conversation log is retained unmodified; only this
         // per-request VIEW is compressed.
         var contextMessages = BuildRequestContext();
-
-        var userMsg = new Message
-        {
-            Role = Role.User,
-            Content = userMessage
-        };
 
         // In-flight messages for the current processing loop (not yet committed as a Turn)
         var inFlightMessages = new List<Message> { userMsg };
@@ -811,7 +872,25 @@ public class SimpleAgent : IDisposable
             };
 
             var compressed = _contextCompressor.Compress(raw.Select(ToCtxMessage).ToList(), options);
-            return compressed.Select(FromCtxMessage).ToList();
+            var result = compressed.Select(FromCtxMessage).ToList();
+
+            // The Andy.Context round-trip above carries only text/tool fields, so structured
+            // multimodal parts (issue #35) stored in Message.Metadata would be dropped from the
+            // request view. Re-attach them by message Id (Ids survive the compressor; only
+            // synthesized summary messages lack them, and those legitimately have no parts).
+            var partsById = raw
+                .Where(m => MultimodalMessage.GetAttachedParts(m) is not null)
+                .ToDictionary(m => m.Id, m => m);
+            if (partsById.Count > 0)
+            {
+                foreach (var message in result)
+                {
+                    if (partsById.TryGetValue(message.Id, out var original))
+                        MultimodalMessage.CopyAttachedParts(original, message);
+                }
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
@@ -993,6 +1072,7 @@ public class SimpleAgent : IDisposable
         if (m.ToolResults is { } toolResults)
             foreach (var tr in toolResults)
                 n += tr.ResultJson?.Length ?? 0;
+        n += MultimodalMessage.EstimateAttachedPartChars(m);
         return n + 16; // rough per-message wire overhead
     }
 

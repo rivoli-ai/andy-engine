@@ -79,6 +79,12 @@ public sealed record TranscriptMessage
 
     public IReadOnlyList<TranscriptToolResult> ToolResults { get; init; } = Array.Empty<TranscriptToolResult>();
 
+    /// <summary>
+    /// Structured multimodal parts attached to the message (issue #35); null for plain text
+    /// messages, so pre-multimodal snapshots serialize unchanged.
+    /// </summary>
+    public IReadOnlyList<TranscriptPart>? Parts { get; init; }
+
     internal static TranscriptMessage FromMessage(Message m) => new()
     {
         Role = m.Role switch
@@ -105,6 +111,9 @@ public sealed record TranscriptMessage
             IsError = tr.IsError,
             ResultJson = tr.ResultJson,
         }).ToList() ?? (IReadOnlyList<TranscriptToolResult>)Array.Empty<TranscriptToolResult>(),
+        Parts = MultimodalMessage.GetAttachedParts(m) is { } parts
+            ? parts.Select(TranscriptPart.FromPart).ToList()
+            : null,
     };
 
     internal bool TryGetRole(out Role role)
@@ -119,26 +128,101 @@ public sealed record TranscriptMessage
         }
     }
 
-    internal Message ToMessage(Role role) => new()
+    internal Message ToMessage(Role role)
     {
-        Role = role,
-        Content = Content,
-        Timestamp = Timestamp,
-        Id = string.IsNullOrEmpty(Id) ? Guid.NewGuid().ToString("N") : Id,
-        ToolCalls = ToolCalls.Select(tc => new ToolCall
+        var message = new Message
         {
-            Id = tc.Id,
-            Name = tc.Name,
-            ArgumentsJson = tc.ArgumentsJson,
-        }).ToList(),
-        ToolResults = ToolResults.Select(tr => new ToolResult
+            Role = role,
+            Content = Content,
+            Timestamp = Timestamp,
+            Id = string.IsNullOrEmpty(Id) ? Guid.NewGuid().ToString("N") : Id,
+            ToolCalls = ToolCalls.Select(tc => new ToolCall
+            {
+                Id = tc.Id,
+                Name = tc.Name,
+                ArgumentsJson = tc.ArgumentsJson,
+            }).ToList(),
+            ToolResults = ToolResults.Select(tr => new ToolResult
+            {
+                CallId = tr.CallId,
+                Name = tr.Name,
+                IsError = tr.IsError,
+                ResultJson = tr.ResultJson,
+            }).ToList(),
+        };
+
+        if (Parts is { Count: > 0 })
         {
-            CallId = tr.CallId,
-            Name = tr.Name,
-            IsError = tr.IsError,
-            ResultJson = tr.ResultJson,
-        }).ToList(),
+            message.Metadata[MultimodalMessage.PartsMetadataKey] =
+                Parts.Select((p, i) => p.ToMessagePart(i)).ToArray();
+        }
+
+        return message;
+    }
+}
+
+/// <summary>
+/// Serialized form of one structured message part (issue #35): "text" carries Text, "image"
+/// carries MimeType plus exactly one of ImageUrl / ImageDataBase64.
+/// </summary>
+public sealed record TranscriptPart
+{
+    public required string Type { get; init; }
+    public string? Text { get; init; }
+    public string? MimeType { get; init; }
+    public string? ImageUrl { get; init; }
+    public string? ImageDataBase64 { get; init; }
+
+    internal static TranscriptPart FromPart(MessagePart part) => part switch
+    {
+        TextPart text => new TranscriptPart { Type = "text", Text = text.Text },
+        ImagePart image => new TranscriptPart
+        {
+            Type = "image",
+            MimeType = image.MimeType,
+            ImageUrl = string.IsNullOrEmpty(image.ImageUrl) ? null : image.ImageUrl,
+            ImageDataBase64 = image.ImageData is { } data ? Convert.ToBase64String(data) : null,
+        },
+        _ => throw new InvalidOperationException(
+            $"Message part type '{part?.Type}' cannot be exported to a transcript."),
     };
+
+    internal MessagePart ToMessagePart(int index)
+    {
+        switch (Type)
+        {
+            case "text":
+                return new TextPart(Text ?? string.Empty);
+            case "image":
+                if (string.IsNullOrWhiteSpace(MimeType))
+                    throw new ArgumentException($"Image part {index} has no media type.");
+                var hasUrl = !string.IsNullOrWhiteSpace(ImageUrl);
+                var hasData = !string.IsNullOrWhiteSpace(ImageDataBase64);
+                if (hasUrl == hasData)
+                    throw new ArgumentException(
+                        $"Image part {index} must carry exactly one source: ImageUrl or ImageDataBase64.");
+                byte[]? bytes = null;
+                if (hasData)
+                {
+                    try
+                    {
+                        bytes = Convert.FromBase64String(ImageDataBase64!);
+                    }
+                    catch (FormatException ex)
+                    {
+                        throw new ArgumentException($"Image part {index} has invalid base64 data.", ex);
+                    }
+                }
+                return new ImagePart
+                {
+                    MimeType = MimeType,
+                    ImageUrl = ImageUrl ?? string.Empty,
+                    ImageData = bytes,
+                };
+            default:
+                throw new ArgumentException($"Message part {index} has unsupported type '{Type}'.");
+        }
+    }
 }
 
 public sealed record TranscriptToolCall
