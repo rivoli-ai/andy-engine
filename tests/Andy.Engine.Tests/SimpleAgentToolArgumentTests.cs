@@ -86,4 +86,58 @@ public class SimpleAgentToolArgumentTests
         Assert.Equal("total", having["column"]);
         Assert.Equal("gt", having["op"]);
     }
+
+    [Fact]
+    public async Task Number_arguments_keep_fidelity()
+    {
+        var registry = new Mock<IToolRegistry>();
+        registry.Setup(r => r.Tools).Returns(new List<ToolRegistration>
+        {
+            new()
+            {
+                IsEnabled = true,
+                Metadata = new ToolMetadata { Id = "num_tool", Name = "Numbers", Description = "Takes numbers." },
+            },
+        });
+
+        Dictionary<string, object?>? captured = null;
+        var executor = new Mock<IToolExecutor>();
+        executor.Setup(e => e.ExecuteAsync(
+                It.IsAny<string>(), It.IsAny<Dictionary<string, object?>>(), It.IsAny<ToolExecutionContext>()))
+            .Callback<string, Dictionary<string, object?>, ToolExecutionContext>((_, p, _) => captured = p)
+            .ReturnsAsync(new ToolExecutionResult { IsSuccessful = true, Data = "ok" });
+
+        // big_id exceeds 2^53: a double round-trip would silently corrupt it.
+        const long bigId = 9_007_199_254_740_995L;
+        var argsJson = $"{{\"count\":30,\"ratio\":2.5,\"big_id\":{bigId}}}";
+
+        var provider = new Mock<ILlmProvider>();
+        provider.SetupSequence(p => p.CompleteAsync(It.IsAny<LlmRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new LlmResponse
+            {
+                AssistantMessage = new Message
+                {
+                    Role = Role.Assistant,
+                    Content = "",
+                    ToolCalls = new List<ToolCall> { new() { Id = "c1", Name = "num_tool", ArgumentsJson = argsJson } },
+                },
+            })
+            .ReturnsAsync(new LlmResponse
+            {
+                AssistantMessage = new Message { Role = Role.Assistant, Content = "Done." },
+                FinishReason = "stop",
+            });
+
+        var agent = new SimpleAgent(provider.Object, registry.Object, executor.Object, "system", maxTurns: 5);
+        await agent.ProcessMessageAsync("crunch");
+
+        Assert.NotNull(captured);
+        // Ordinary numbers stay double — ecosystem tools read numerics via GetParameter<double?>,
+        // whose Convert.ChangeType fallback cannot convert other boxed types to Nullable<double>.
+        Assert.Equal(30d, Assert.IsType<double>(captured!["count"]));
+        Assert.Equal(2.5d, Assert.IsType<double>(captured["ratio"]));
+        // Integers beyond double's exact range (2^53) keep int64 fidelity instead of being
+        // silently corrupted by the double round-trip.
+        Assert.Equal(bigId, Assert.IsType<long>(captured["big_id"]));
+    }
 }

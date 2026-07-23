@@ -34,6 +34,9 @@ public class SimpleAgent : IDisposable
     private readonly string _workingDirectory;
     private readonly IReadOnlyDictionary<string, object?>? _extraBody;
     private IConversationManager _conversationManager;
+    // True when the agent created its own DefaultConversationManager (no caller-supplied one).
+    // Only an agent-owned manager may be replaced by ClearHistory().
+    private readonly bool _ownsConversationManager;
 
     public SimpleAgent(
         ILlmProvider llmProvider,
@@ -64,6 +67,7 @@ public class SimpleAgent : IDisposable
         _extraBody = extraBody;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
+        _ownsConversationManager = conversationManager is null;
         _conversationManager = conversationManager ?? new DefaultConversationManager();
     }
 
@@ -78,15 +82,38 @@ public class SimpleAgent : IDisposable
     public Conversation Conversation => _conversationManager.Conversation;
 
     /// <summary>
-    /// Event raised when a tool is called.
+    /// Event raised after each tool call completes, carrying the (truncated) result content the
+    /// model will see. Not raised for a call aborted by cancellation.
     /// </summary>
     public event EventHandler<ToolCalledEventArgs>? ToolCalled;
 
     /// <summary>
     /// Process a user message and return a response.
     /// </summary>
+    public Task<SimpleAgentResult> ProcessMessageAsync(
+        string userMessage,
+        CancellationToken cancellationToken = default) =>
+        ProcessMessageAsync(userMessage, onResponseDelta: null, cancellationToken);
+
+    /// <summary>
+    /// Process a user message, optionally streaming the model's response text incrementally.
+    ///
+    /// When <paramref name="onResponseDelta"/> is provided, the LLM is called via
+    /// <see cref="ILlmProvider.StreamCompleteAsync"/> and each provider text delta is forwarded in
+    /// order as a <see cref="AgentResponseDeltaKind.Text"/> event tagged with its turn number.
+    /// Whether a turn's text is the final answer is only knowable once that turn's stream ends: if
+    /// the turn produced tool calls or was cut off by the output limit, its text was tool-round
+    /// narration and a single <see cref="AgentResponseDeltaKind.Discarded"/> event is emitted for
+    /// that turn so consumers can drop or relabel it. Text from the turn the returned result comes
+    /// from is never discarded. Providers whose streaming path is unsupported fall back to
+    /// <see cref="ILlmProvider.CompleteAsync"/> and emit the final text as one chunk. The returned
+    /// <see cref="SimpleAgentResult"/> is always fully populated, identical to the non-streaming
+    /// overload. The callback is invoked synchronously on the processing loop, so no events are
+    /// delivered after the returned task completes (including on cancellation).
+    /// </summary>
     public async Task<SimpleAgentResult> ProcessMessageAsync(
         string userMessage,
+        Action<AgentResponseDelta>? onResponseDelta,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(userMessage))
@@ -121,6 +148,32 @@ public class SimpleAgent : IDisposable
 
         var turnCount = 0;
         var startTime = DateTime.UtcNow;
+        // Set once the turn has been recorded in the conversation manager, so the interrupted-turn
+        // commit in the catch paths cannot double-record it.
+        var turnCommitted = false;
+
+        // Records what actually happened when the loop is interrupted (error or cancellation).
+        // Executed tools may have had side effects on disk; dropping the turn would make the next
+        // call's context contradict that state and is unrecoverable for snapshot/restore.
+        void CommitInterruptedTurn()
+        {
+            if (turnCommitted)
+                return;
+            try
+            {
+                _conversationManager.AddTurn(new Turn
+                {
+                    UserOrSystemMessage = userMsg,
+                    AssistantMessage = lastAssistantWasInterleaved ? null : finalAssistantMessage,
+                    ToolMessages = new List<Message>(allInterleavedMessages),
+                });
+                turnCommitted = true;
+            }
+            catch (Exception commitEx)
+            {
+                _logger?.LogWarning(commitEx, "Failed to record interrupted turn in conversation history.");
+            }
+        }
 
         try
         {
@@ -156,8 +209,11 @@ public class SimpleAgent : IDisposable
                 // Build tool declarations from registry
                 var toolDeclarations = BuildToolDeclarations();
 
-                // Make LLM request with prior context + in-flight messages
-                var allMessages = contextMessages.Concat(inFlightMessages).ToList();
+                // Make LLM request with prior context + in-flight messages, re-fitted to the
+                // context token budget EVERY turn: in-flight tool results accumulate up to
+                // _maxToolResultChars per call, so a long tool loop would otherwise overflow the
+                // provider context mid-run even though the committed history fit at loop entry.
+                var allMessages = FitRequestToBudget(contextMessages, inFlightMessages);
                 var request = new LlmRequest
                 {
                     Messages = allMessages,
@@ -187,7 +243,8 @@ public class SimpleAgent : IDisposable
                         string.Join(", ", toolDeclarations.Select(t => t.Name)));
                 }
 
-                var response = await _llmProvider.CompleteAsync(request, cancellationToken);
+                var (response, streamedTextThisTurn) =
+                    await GetLlmResponseAsync(request, turnCount, onResponseDelta, cancellationToken);
 
                 _logger?.LogInformation("LLM response - Content: '{Content}', HasToolCalls: {HasToolCalls}, FinishReason: {FinishReason}",
                     response.Content, response.HasToolCalls, response.FinishReason);
@@ -205,6 +262,11 @@ public class SimpleAgent : IDisposable
                     // Store the intermediate assistant message (with ToolCalls) for proper context reconstruction
                     allInterleavedMessages.Add(response.AssistantMessage);
                     lastAssistantWasInterleaved = true;
+
+                    // Any text streamed from this turn was tool-round narration, not the final
+                    // answer — tell the consumer to drop/relabel it.
+                    if (streamedTextThisTurn)
+                        onResponseDelta?.Invoke(AgentResponseDelta.DiscardedTurn(turnCount));
 
                     // Execute all tool calls CONCURRENTLY to cut latency, then assemble the
                     // results in the ORIGINAL tool-call order. The model maps tool results to
@@ -259,6 +321,10 @@ public class SimpleAgent : IDisposable
                     allInterleavedMessages.Add(response.AssistantMessage);
                     lastAssistantWasInterleaved = true;
 
+                    // The truncated text is not a final answer; the model will continue.
+                    if (streamedTextThisTurn)
+                        onResponseDelta?.Invoke(AgentResponseDelta.DiscardedTurn(turnCount));
+
                     var nudge = new Message
                     {
                         Role = Role.User,
@@ -274,16 +340,23 @@ public class SimpleAgent : IDisposable
                 // No tool calls - we have a final response
                 _logger?.LogInformation("LLM provided final response");
 
+                // Streaming consumers got the final text incrementally when the provider streams;
+                // when the non-streaming fallback was used, emit it as the one immediate chunk.
+                if (onResponseDelta is not null && !streamedTextThisTurn && response.Content.Length > 0)
+                    onResponseDelta(AgentResponseDelta.TextChunk(turnCount, response.Content));
+
                 // Record the complete turn in conversation
                 // ToolMessages contains ALL intermediate messages in order:
                 // assistant(tool_calls) → tool results → assistant(tool_calls) → tool results → ...
-                // AssistantMessage holds the final response (no tool calls)
+                // AssistantMessage holds the final response (no tool calls). A COPY of the
+                // interleaved list is committed so the stored Turn never aliases loop-local state.
                 _conversationManager.AddTurn(new Turn
                 {
                     UserOrSystemMessage = userMsg,
                     AssistantMessage = finalAssistantMessage,
-                    ToolMessages = allInterleavedMessages
+                    ToolMessages = new List<Message>(allInterleavedMessages)
                 });
+                turnCommitted = true;
 
                 var duration = DateTime.UtcNow - startTime;
 
@@ -310,8 +383,9 @@ public class SimpleAgent : IDisposable
             {
                 UserOrSystemMessage = userMsg,
                 AssistantMessage = lastAssistantWasInterleaved ? null : finalAssistantMessage,
-                ToolMessages = allInterleavedMessages
+                ToolMessages = new List<Message>(allInterleavedMessages)
             });
+            turnCommitted = true;
 
             _logger?.LogWarning("Reached maximum turn count ({MaxTurns})", _maxTurns);
 
@@ -343,10 +417,15 @@ public class SimpleAgent : IDisposable
             // Cancellation must surface to callers as a cancellation, not be masked as a
             // failed SimpleAgentResult. Consumers (e.g. the headless cancel protocol) rely
             // on OperationCanceledException propagating out of ProcessMessageAsync.
+            // The partial turn is still committed first: tools that already ran had side
+            // effects, and a resumed session must see them.
+            CommitInterruptedTurn();
             throw;
         }
         catch (Exception ex)
         {
+            CommitInterruptedTurn();
+
             _logger?.LogError(ex, "Error processing message: {Message}", ex.Message);
 
             // Log full stack trace for debugging
@@ -373,16 +452,6 @@ public class SimpleAgent : IDisposable
         }
     }
 
-    /// <summary>
-    /// Executes a single tool call (parse args → execute → shape the result Message) with the
-    /// same try/catch semantics used for serial execution, so it is safe to run concurrently
-    /// with sibling calls from the same turn. Each invocation builds its OWN
-    /// <see cref="ToolExecutionContext"/> and never shares mutable state with other calls.
-    ///
-    /// A failing call is captured as THAT call's error result (so one failure does not fail the
-    /// others), but <see cref="OperationCanceledException"/> is rethrown so a cancellation
-    /// cancels the whole run rather than being masked as a tool error.
-    /// </summary>
     /// <summary>
     /// True when the named tool declares its own timeout parameter (a parameter whose name contains
     /// "timeout", e.g. execute_command's <c>timeout_seconds</c>). Such tools enforce their own
@@ -416,17 +485,22 @@ public class SimpleAgent : IDisposable
         }
     }
 
+    /// <summary>
+    /// Executes a single tool call (parse args → execute → shape the result Message) with the
+    /// same try/catch semantics used for serial execution, so it is safe to run concurrently
+    /// with sibling calls from the same turn. Each invocation builds its OWN
+    /// <see cref="ToolExecutionContext"/> and never shares mutable state with other calls.
+    ///
+    /// A failing call is captured as THAT call's error result (so one failure does not fail the
+    /// others), but <see cref="OperationCanceledException"/> is rethrown so a cancellation
+    /// cancels the whole run rather than being masked as a tool error.
+    /// </summary>
     private async Task<Message> ExecuteToolCallAsync(Andy.Model.Model.ToolCall toolCall, CancellationToken cancellationToken)
     {
         _logger?.LogDebug("Executing tool: {ToolName}", toolCall.Name);
 
-        // Raise event (one per call, as before).
+        // One event per call, raised AFTER execution so subscribers see the actual result.
         var traceId = Guid.NewGuid();
-        ToolCalled?.Invoke(this, new ToolCalledEventArgs(
-            traceId,
-            toolCall.Name,
-            "" // Result will be populated after execution
-        ));
 
         try
         {
@@ -483,6 +557,8 @@ public class SimpleAgent : IDisposable
             if (toolResult.IsSuccessful)
                 resultContent = TruncateToolResult(resultContent, _maxToolResultChars);
 
+            ToolCalled?.Invoke(this, new ToolCalledEventArgs(traceId, toolCall.Name, resultContent));
+
             return new Message
             {
                 Role = Role.Tool,
@@ -510,6 +586,7 @@ public class SimpleAgent : IDisposable
         {
             _logger?.LogError(ex, "Error executing tool {ToolName}", toolCall.Name);
             var errorContent = JsonSerializer.Serialize(new { success = false, error = ex.Message });
+            ToolCalled?.Invoke(this, new ToolCalledEventArgs(traceId, toolCall.Name, errorContent));
             return new Message
             {
                 Role = Role.Tool,
@@ -529,12 +606,22 @@ public class SimpleAgent : IDisposable
     }
 
     /// <summary>
-    /// Clear conversation history.
+    /// Clear conversation history. With the agent's own default manager the conversation is fully
+    /// emptied. A caller-supplied <see cref="IConversationManager"/> is NEVER replaced — it gets
+    /// <see cref="IConversationManager.Reset"/> and keeps receiving subsequent turns, so whether
+    /// past turns survive is that manager's own Reset contract (DefaultConversationManager, for
+    /// example, preserves them). Previously the injected manager was silently swapped for a fresh
+    /// in-memory one, orphaning persisting managers mid-lifetime.
     /// </summary>
     public void ClearHistory()
     {
         _conversationManager.Reset();
-        _conversationManager = new DefaultConversationManager();
+        if (_ownsConversationManager)
+        {
+            // Turns are append-only on Conversation and Reset() preserves them; replacing the
+            // agent-owned manager is the only way to actually empty the history.
+            _conversationManager = new DefaultConversationManager();
+        }
         _logger?.LogInformation("Conversation history cleared");
     }
 
@@ -604,6 +691,227 @@ public class SimpleAgent : IDisposable
             _logger?.LogWarning(ex, "Context compression failed; falling back to uncompressed request view.");
             return raw;
         }
+    }
+
+    /// <summary>
+    /// Gets one LLM response for the current turn. Without a delta callback this is a plain
+    /// <see cref="ILlmProvider.CompleteAsync"/> call. With one, the provider's streaming API is
+    /// used: text deltas are forwarded to the callback in order as they arrive (tagged with the
+    /// turn), tool-call and finish-reason chunks are accumulated, and the assembled
+    /// <see cref="LlmResponse"/> is returned. An error chunk becomes an exception, matching
+    /// CompleteAsync failure semantics. Providers that do not support streaming
+    /// (NotSupported/NotImplemented before the first chunk) fall back to CompleteAsync;
+    /// the returned flag then reports that no text was streamed so the caller can emit the
+    /// final content as a single chunk.
+    /// </summary>
+    private async Task<(LlmResponse Response, bool StreamedText)> GetLlmResponseAsync(
+        LlmRequest request,
+        int turn,
+        Action<AgentResponseDelta>? onResponseDelta,
+        CancellationToken cancellationToken)
+    {
+        if (onResponseDelta is null)
+            return (await _llmProvider.CompleteAsync(request, cancellationToken), false);
+
+        var content = new StringBuilder();
+        var toolCalls = new List<Andy.Model.Model.ToolCall>();
+        string? finishReason = null;
+        LlmUsage? usage = null;
+        var streamedText = false;
+
+        var enumerator = _llmProvider.StreamCompleteAsync(request, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        try
+        {
+            while (true)
+            {
+                bool moved;
+                try
+                {
+                    moved = await enumerator.MoveNextAsync();
+                }
+                catch (Exception ex) when (!streamedText && toolCalls.Count == 0 &&
+                                           ex is NotSupportedException or NotImplementedException)
+                {
+                    // Provider has no streaming path; use the non-streaming call instead.
+                    _logger?.LogDebug("Provider {Provider} does not support streaming; falling back to CompleteAsync.",
+                        _llmProvider.Name);
+                    return (await _llmProvider.CompleteAsync(request, cancellationToken), false);
+                }
+
+                if (!moved)
+                    break;
+
+                var chunk = enumerator.Current;
+                if (chunk.Error is { Length: > 0 } error)
+                    throw new InvalidOperationException(error);
+
+                if (chunk.Delta?.Content is { Length: > 0 } text)
+                {
+                    content.Append(text);
+                    streamedText = true;
+                    onResponseDelta(AgentResponseDelta.TextChunk(turn, text));
+                }
+
+                if (chunk.Delta?.ToolCalls is { Count: > 0 } chunkToolCalls)
+                    toolCalls.AddRange(chunkToolCalls);
+
+                if (chunk.FinishReason is { Length: > 0 } fr)
+                    finishReason = fr;
+                if (chunk.Usage is not null)
+                    usage = chunk.Usage;
+            }
+        }
+        finally
+        {
+            await enumerator.DisposeAsync();
+        }
+
+        var response = new LlmResponse
+        {
+            AssistantMessage = new Message
+            {
+                Role = Role.Assistant,
+                Content = content.ToString(),
+                ToolCalls = toolCalls,
+            },
+            FinishReason = finishReason,
+            Usage = usage,
+        };
+        return (response, streamedText);
+    }
+
+    // Rough chars-per-token factor shared by the budget estimates below (~4 chars/token, the
+    // common heuristic for English/code).
+    private const int CharsPerTokenEstimate = 4;
+    // The most recent messages of the combined request are never shrunk: the model needs the
+    // latest exchanges verbatim to act correctly.
+    private const int BudgetProtectedTailMessages = 8;
+    // Head slice kept when an old tool result is elided to fit the budget.
+    private const int ElidedToolResultHeadChars = 400;
+
+    /// <summary>
+    /// Fits the combined request view (committed context + current in-flight messages) to the
+    /// context token budget. Applied EVERY loop turn, because in-flight tool results grow the
+    /// request far beyond what the pre-loop compression saw. Two stages: (1) elide old tool-result
+    /// payloads (the dominant weight in tool-heavy sessions) oldest-first, sparing the protected
+    /// tail; (2) if still over, drop whole committed turns oldest-first (in-flight messages are
+    /// never dropped). Only the returned request view is modified — the conversation log and the
+    /// live in-flight lists keep their full payloads.
+    /// </summary>
+    internal List<Message> FitRequestToBudget(
+        IReadOnlyList<Message> contextMessages, IReadOnlyList<Message> inFlightMessages)
+    {
+        var messages = new List<Message>(contextMessages.Count + inFlightMessages.Count);
+        messages.AddRange(contextMessages);
+        messages.AddRange(inFlightMessages);
+
+        var budgetChars = (long)_maxContextTokens * CharsPerTokenEstimate;
+        var totalChars = messages.Sum(EstimateMessageChars);
+        if (totalChars <= budgetChars)
+            return messages;
+
+        // Stage 1: elide old tool results (request view only).
+        for (var i = 0; i < messages.Count - BudgetProtectedTailMessages && totalChars > budgetChars; i++)
+        {
+            if (messages[i].Role != Role.Tool)
+                continue;
+            var shrunk = ShrinkToolResultMessage(messages[i]);
+            if (shrunk is null)
+                continue;
+            totalChars -= EstimateMessageChars(messages[i]) - EstimateMessageChars(shrunk);
+            messages[i] = shrunk;
+        }
+
+        if (totalChars <= budgetChars)
+            return messages;
+
+        // Stage 2: drop whole committed turns (a user/system message up to the next one) from the
+        // front, keeping tool-call pairing intact. The current call's messages are never dropped.
+        var committedCount = contextMessages.Count;
+        var dropCount = 0;
+        while (totalChars > budgetChars && dropCount < committedCount)
+        {
+            var end = dropCount + 1;
+            while (end < committedCount &&
+                   messages[end].Role != Role.User && messages[end].Role != Role.System)
+                end++;
+            for (var i = dropCount; i < end; i++)
+                totalChars -= EstimateMessageChars(messages[i]);
+            dropCount = end;
+        }
+        if (dropCount > 0)
+        {
+            _logger?.LogWarning(
+                "Context budget: dropped the oldest {Dropped} committed message(s) from the request view.",
+                dropCount);
+            messages.RemoveRange(0, dropCount);
+        }
+
+        if (totalChars > budgetChars)
+            _logger?.LogWarning(
+                "Request still exceeds the context budget (~{Tokens} tokens > {Budget}) after elision; sending as-is.",
+                totalChars / CharsPerTokenEstimate, _maxContextTokens);
+
+        return messages;
+    }
+
+    /// <summary>Rough per-message size: content plus tool-call arguments plus tool-result payloads.</summary>
+    internal static long EstimateMessageChars(Message m)
+    {
+        long n = m.Content?.Length ?? 0;
+        if (m.ToolCalls is { } toolCalls)
+            foreach (var tc in toolCalls)
+                n += (tc.ArgumentsJson?.Length ?? 0) + (tc.Name?.Length ?? 0);
+        if (m.ToolResults is { } toolResults)
+            foreach (var tr in toolResults)
+                n += tr.ResultJson?.Length ?? 0;
+        return n + 16; // rough per-message wire overhead
+    }
+
+    /// <summary>
+    /// Returns a copy of a tool message with its result payloads (Content and every
+    /// ToolResult.ResultJson — providers serialize tool messages from ResultJson, so eliding
+    /// Content alone would change nothing on the wire) elided to a head slice. Returns null when
+    /// the message is already small enough that eliding would not help.
+    /// </summary>
+    private static Message? ShrinkToolResultMessage(Message m)
+    {
+        const int shrinkThreshold = ElidedToolResultHeadChars * 2;
+        var contentOversized = (m.Content?.Length ?? 0) > shrinkThreshold;
+        var anyResultOversized = m.ToolResults?.Any(tr => (tr.ResultJson?.Length ?? 0) > shrinkThreshold) == true;
+        if (!contentOversized && !anyResultOversized)
+            return null;
+
+        return new Message
+        {
+            Role = m.Role,
+            Id = m.Id,
+            Timestamp = m.Timestamp,
+            Content = ElideForBudget(m.Content ?? string.Empty),
+            ToolCalls = m.ToolCalls ?? new List<Andy.Model.Model.ToolCall>(),
+            ToolResults = m.ToolResults?.Select(tr => new Andy.Model.Model.ToolResult
+            {
+                CallId = tr.CallId,
+                Name = tr.Name,
+                IsError = tr.IsError,
+                ResultJson = ElideForBudget(tr.ResultJson ?? string.Empty),
+            }).ToList() ?? new List<Andy.Model.Model.ToolResult>(),
+        };
+    }
+
+    /// <summary>Replaces an oversized payload with a small, valid JSON stub keeping a head slice.</summary>
+    internal static string ElideForBudget(string payload)
+    {
+        if (payload.Length <= ElidedToolResultHeadChars * 2)
+            return payload;
+        return JsonSerializer.Serialize(new
+        {
+            elided = true,
+            original_chars = payload.Length,
+            head = payload[..ElidedToolResultHeadChars],
+            note = "Older tool result compacted to fit the context budget. Re-run the tool if the full output is needed.",
+        });
     }
 
     private static CtxMessage ToCtxMessage(Message m) => new CtxMessage
@@ -727,11 +1035,6 @@ public class SimpleAgent : IDisposable
     }
 
     /// <summary>
-    /// True when a finish reason indicates the response was cut off by the output-token limit
-    /// (rather than the model choosing to stop). Providers report this as "length" (OpenAI/
-    /// OpenRouter) or "max_tokens" (Anthropic).
-    /// </summary>
-    /// <summary>
     /// Caps a successful tool-result JSON payload at <paramref name="maxChars"/> characters.
     /// When under the cap (or the cap is disabled with a non-positive value), the original
     /// payload is returned unchanged. When over the cap, returns a new, valid JSON object that
@@ -758,6 +1061,11 @@ public class SimpleAgent : IDisposable
         });
     }
 
+    /// <summary>
+    /// True when a finish reason indicates the response was cut off by the output-token limit
+    /// (rather than the model choosing to stop). Providers report this as "length" (OpenAI/
+    /// OpenRouter) or "max_tokens" (Anthropic).
+    /// </summary>
     internal static bool IsTruncatedByOutputLimit(string? finishReason) =>
         finishReason is not null &&
         (finishReason.Equals("length", StringComparison.OrdinalIgnoreCase) ||
@@ -880,7 +1188,7 @@ public class SimpleAgent : IDisposable
     private static object? ConvertElement(JsonElement element) => element.ValueKind switch
     {
         JsonValueKind.String => element.GetString(),
-        JsonValueKind.Number => element.GetDouble(),
+        JsonValueKind.Number => ConvertNumber(element),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
@@ -888,6 +1196,24 @@ public class SimpleAgent : IDisposable
         JsonValueKind.Array => DeserializeArray(element),
         _ => element.GetRawText()
     };
+
+    // Largest integer a double represents exactly (2^53).
+    private const long MaxDoubleExactInteger = 1L << 53;
+
+    /// <summary>
+    /// JSON numbers surface as double by ecosystem convention: Andy.Tools reads numeric
+    /// parameters via GetParameter&lt;double?&gt;, whose Convert.ChangeType fallback throws for a
+    /// Nullable&lt;T&gt; target, so boxing small integers as long would null out every numeric tool
+    /// argument. But a double only holds integers exactly up to 2^53 — larger int64 values (ids,
+    /// offsets, hashes) were silently corrupted by the double round-trip. Those stay long: they
+    /// were already unusable as double, so fidelity wins over the convention there.
+    /// </summary>
+    private static object ConvertNumber(JsonElement element) =>
+        element.TryGetInt64(out var integer) &&
+        (integer > MaxDoubleExactInteger || integer < -MaxDoubleExactInteger)
+            // Explicit box: an unboxed conditional would unify long/double to double and undo this.
+            ? (object)integer
+            : element.GetDouble();
 
     private static Dictionary<string, object?> DeserializeObject(JsonElement objectElement)
     {

@@ -47,9 +47,10 @@ public sealed partial class RateLimitPolicy
         if (m.Success && int.TryParse(m.Groups[1].Value, out var status))
             return status == 429 || (status >= 500 && status <= 599);
 
-        // Fall back to textual hints when no explicit status is present.
-        return message.Contains("429", StringComparison.Ordinal)
-            || message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase)
+        // Fall back to textual hints when no explicit status is present. Note: NOT a bare "429"
+        // substring check — request ids, token counts, etc. routinely contain those digits and
+        // would turn a permanent error into 6 pointless backoff retries.
+        return message.Contains("Too Many Requests", StringComparison.OrdinalIgnoreCase)
             || message.Contains("rate limit", StringComparison.OrdinalIgnoreCase)
             // Malformed/empty response body parsed as JSON (transient — retry usually recovers).
             || message.Contains("does not contain any JSON tokens", StringComparison.OrdinalIgnoreCase)

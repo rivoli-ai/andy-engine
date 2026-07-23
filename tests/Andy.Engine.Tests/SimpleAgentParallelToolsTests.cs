@@ -31,8 +31,8 @@ public class SimpleAgentParallelToolsTests
 
     /// <summary>
     /// Turn 1: assistant emits THREE tool calls. Turn 2: a plain final answer. The fake executor
-    /// completes the calls OUT OF ORDER (varying delays), so a serial implementation and a correct
-    /// parallel one are distinguishable: the result order must still match the call order.
+    /// completes the calls OUT OF ORDER, so a serial implementation and a correct parallel one
+    /// are distinguishable: the result order must still match the call order.
     /// </summary>
     private static Mock<ILlmProvider> ProviderWithThreeToolCalls()
     {
@@ -66,14 +66,12 @@ public class SimpleAgentParallelToolsTests
         var provider = ProviderWithThreeToolCalls();
         var completionOrder = new ConcurrentQueue<string>();
 
-        // Delays are inverted relative to call order so completion order != call order:
-        // tool_a (first) takes longest, tool_c (last) finishes first.
-        var delays = new Dictionary<string, int>
-        {
-            ["tool_a"] = 120,
-            ["tool_b"] = 60,
-            ["tool_c"] = 10,
-        };
+        // Each call completes only after the NEXT call in call order has completed, so the
+        // completion order is deterministically the REVERSE of the call order (c, b, a) with no
+        // wall-clock timing. A serial in-call-order implementation would block forever on tool_a;
+        // the timeout turns that into a clean failure instead of a hang.
+        var bDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var executor = new Mock<IToolExecutor>();
         executor.Setup(e => e.ExecuteAsync(
@@ -82,8 +80,22 @@ public class SimpleAgentParallelToolsTests
                 It.IsAny<ToolExecutionContext>()))
             .Returns<string, Dictionary<string, object?>, ToolExecutionContext>(async (name, _, ctx) =>
             {
-                await Task.Delay(delays[name], ctx.CancellationToken);
+                var gate = name switch
+                {
+                    "tool_a" => bDone.Task,
+                    "tool_b" => cDone.Task,
+                    _ => Task.CompletedTask,
+                };
+                var finished = await Task.WhenAny(gate, Task.Delay(5000, ctx.CancellationToken));
+                if (finished != gate)
+                    throw new TimeoutException($"{name} never unblocked — tool calls are not running concurrently.");
+
                 completionOrder.Enqueue(name);
+                if (name == "tool_c")
+                    cDone.SetResult();
+                else if (name == "tool_b")
+                    bDone.SetResult();
+
                 return new ToolExecutionResult
                 {
                     IsSuccessful = true,

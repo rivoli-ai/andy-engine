@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Andy.Model.Llm;
 using Microsoft.Extensions.Logging;
 
@@ -66,10 +67,75 @@ public sealed class RateLimitingLlmProvider : ILlmProvider
         throw new RateLimitExhaustedException(_policy.MaxRetries + 1, Truncate(lastError));
     }
 
-    public IAsyncEnumerable<LlmStreamResponse> StreamCompleteAsync(
-        LlmRequest request, CancellationToken cancellationToken = default) =>
-        // Streaming is not used by SimpleAgent; pass through without retry wrapping.
-        _inner.StreamCompleteAsync(request, cancellationToken);
+    /// <summary>
+    /// Streams with the same transient-retry protection as <see cref="CompleteAsync"/>, but only
+    /// until the first chunk reaches the consumer: once output has been yielded, a restart would
+    /// duplicate it, so later failures propagate. Providers that surface HTTP failures as an error
+    /// CHUNK (rather than throwing) are also covered — a transient error chunk arriving before any
+    /// real output triggers a retry instead of being handed to the consumer.
+    /// </summary>
+    public async IAsyncEnumerable<LlmStreamResponse> StreamCompleteAsync(
+        LlmRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var lastError = string.Empty;
+        for (var attempt = 0; attempt <= _policy.MaxRetries; attempt++)
+        {
+            string? retryError = null;
+            var yielded = false;
+            var enumerator = _inner.StreamCompleteAsync(request, cancellationToken)
+                .GetAsyncEnumerator(cancellationToken);
+            try
+            {
+                while (true)
+                {
+                    bool moved;
+                    LlmStreamResponse? current = null;
+                    try
+                    {
+                        moved = await enumerator.MoveNextAsync();
+                        if (moved)
+                            current = enumerator.Current;
+                    }
+                    catch (Exception ex) when (!yielded &&
+                                               ex is not OperationCanceledException &&
+                                               RateLimitPolicy.IsTransient(ex))
+                    {
+                        retryError = ex.Message;
+                        break;
+                    }
+
+                    if (!moved)
+                        yield break;
+
+                    if (!yielded && current!.Error is { Length: > 0 } err && RateLimitPolicy.IsTransient(err))
+                    {
+                        retryError = err;
+                        break;
+                    }
+
+                    yielded = true;
+                    yield return current!;
+                }
+            }
+            finally
+            {
+                await enumerator.DisposeAsync();
+            }
+
+            lastError = retryError!;
+            if (attempt == _policy.MaxRetries)
+                break;
+
+            var delay = _policy.NextDelay(attempt, lastError, jitterSeed: attempt + 1);
+            _logger?.LogWarning(
+                "Transient LLM stream error (attempt {Attempt}/{Max}); backing off {Delay}. {Error}",
+                attempt + 1, _policy.MaxRetries, delay, Truncate(lastError));
+            await _delay(delay, cancellationToken);
+        }
+
+        throw new RateLimitExhaustedException(_policy.MaxRetries + 1, Truncate(lastError));
+    }
 
     private static string Truncate(string s, int max = 300) =>
         string.IsNullOrEmpty(s) || s.Length <= max ? s : s[..max];
