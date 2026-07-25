@@ -98,6 +98,26 @@ public class SimpleAgentPlanTests
     }
 
     [Fact]
+    public async Task PlanningCanBeEnabledBeforeFirstTurnButNotMidConversation()
+    {
+        var requests = new List<LlmRequest>();
+        var provider = new Mock<ILlmProvider>();
+        provider.Setup(p => p.CompleteAsync(
+                It.IsAny<LlmRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<LlmRequest, CancellationToken>((request, _) => requests.Add(request))
+            .ReturnsAsync(FinalResponse());
+        var agent = new SimpleAgent(
+            provider.Object, Registry().Object, Executor().Object, "system");
+
+        agent.EnablePlanning();
+        await agent.ProcessMessageAsync("hello");
+
+        requests.Single().Tools.Should().ContainSingle(tool => tool.Name == "update_plan");
+        var act = () => agent.EnablePlanning();
+        act.Should().Throw<InvalidOperationException>().WithMessage("*before the first*");
+    }
+
+    [Fact]
     public async Task PlanCreationEmitsSnapshotAndReachesNextModelContext()
     {
         var requests = new List<LlmRequest>();

@@ -35,7 +35,7 @@ public class SimpleAgent : IDisposable
     private readonly IReadOnlyDictionary<string, object?>? _extraBody;
     private readonly int _maxImageBytes;
     private readonly AgentContinuationPolicy? _continuationPolicy;
-    private readonly bool _enablePlanning;
+    private bool _enablePlanning;
     private readonly AgentPlanState _planState = new();
     private IConversationManager _conversationManager;
     // True when the agent created its own DefaultConversationManager (no caller-supplied one).
@@ -113,6 +113,19 @@ public class SimpleAgent : IDisposable
 
     /// <summary>The latest structured plan, or null until one has been created.</summary>
     public AgentPlanSnapshot? CurrentPlan => _planState.Current;
+
+    /// <summary>
+    /// Enable structured planning before the first conversation turn. This method lets hosts
+    /// adopt planning without depending on a newly added constructor parameter; enabling it after
+    /// history exists is rejected so the advertised tool set cannot change mid-conversation.
+    /// </summary>
+    public void EnablePlanning()
+    {
+        if (_conversationManager.Conversation.Turns.Count > 0)
+            throw new InvalidOperationException(
+                "Structured planning must be enabled before the first conversation turn.");
+        _enablePlanning = true;
+    }
 
     /// <summary>
     /// Process a user message and return a response.
