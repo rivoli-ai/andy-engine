@@ -26,6 +26,12 @@ public sealed record TranscriptSnapshot
 
     public IReadOnlyList<TranscriptTurn> Turns { get; init; } = Array.Empty<TranscriptTurn>();
 
+    /// <summary>
+    /// Latest structured plan snapshot, when planning was enabled. Optional so existing version-1
+    /// transcripts remain byte-compatible and deserialize without migration.
+    /// </summary>
+    public AgentPlanSnapshot? Plan { get; init; }
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,

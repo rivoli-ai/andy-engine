@@ -36,6 +36,8 @@ planner/critic layer — the loop mirrors the pattern used by successful CLI age
   full conversation log is retained.
 - **Cancellation** — `ProcessMessageAsync` honors a `CancellationToken`.
 - **Tool events** — subscribe to `ToolCalled` for monitoring and debugging.
+- **Optional structured planning** — enable `update_plan` and subscribe to typed plan snapshots
+  as multi-step work moves from pending to active to completed.
 
 ## Installation
 
@@ -117,7 +119,9 @@ Console.WriteLine(result.Success ? result.Response : $"Stopped: {result.StopReas
 
 Useful `SimpleAgent` constructor options: `maxTurns`, `maxOutputTokens`, `maxToolResultChars`,
 `maxContextTokens`, `enablePromptCaching`, `extraBody` (provider-specific request fields), and
-`continuationPolicy`.
+`continuationPolicy`. Set `enablePlanning: true` to expose the engine-managed `update_plan` tool;
+subscribe to `PlanChanged` and inspect `CurrentPlan` to render live todo progress. Plans are
+optional, use stable item ids across revisions, and are included in transcript snapshots.
 
 `ProcessMessageAsync` returns a `SimpleAgentResult(bool Success, string Response, int TurnCount,
 TimeSpan Duration, string StopReason)`.

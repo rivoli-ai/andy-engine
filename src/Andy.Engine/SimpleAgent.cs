@@ -35,6 +35,8 @@ public class SimpleAgent : IDisposable
     private readonly IReadOnlyDictionary<string, object?>? _extraBody;
     private readonly int _maxImageBytes;
     private readonly AgentContinuationPolicy? _continuationPolicy;
+    private bool _enablePlanning;
+    private readonly AgentPlanState _planState = new();
     private IConversationManager _conversationManager;
     // True when the agent created its own DefaultConversationManager (no caller-supplied one).
     // Only an agent-owned manager may be replaced by ClearHistory().
@@ -56,7 +58,8 @@ public class SimpleAgent : IDisposable
         bool enablePromptCaching = true,
         IReadOnlyDictionary<string, object?>? extraBody = null,
         int maxImageBytes = MultimodalMessage.DefaultMaxImageBytes,
-        AgentContinuationPolicy? continuationPolicy = null)
+        AgentContinuationPolicy? continuationPolicy = null,
+        bool enablePlanning = false)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -72,6 +75,7 @@ public class SimpleAgent : IDisposable
         _maxImageBytes = maxImageBytes > 0 ? maxImageBytes : MultimodalMessage.DefaultMaxImageBytes;
         ValidateContinuationPolicy(continuationPolicy, maxTurns);
         _continuationPolicy = continuationPolicy;
+        _enablePlanning = enablePlanning;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
         _logger = logger;
         _ownsConversationManager = conversationManager is null;
@@ -100,6 +104,28 @@ public class SimpleAgent : IDisposable
     /// exception thrown by a subscriber is logged and does not fault the agent run.
     /// </summary>
     public event EventHandler<AgentContinuationEventArgs>? ContinuationProgress;
+
+    /// <summary>
+    /// Structured plan snapshots emitted when planning is enabled and the model creates or
+    /// updates its plan. Subscriber exceptions are logged and never fault the agent turn.
+    /// </summary>
+    public event EventHandler<AgentPlanChangedEventArgs>? PlanChanged;
+
+    /// <summary>The latest structured plan, or null until one has been created.</summary>
+    public AgentPlanSnapshot? CurrentPlan => _planState.Current;
+
+    /// <summary>
+    /// Enable structured planning before the first conversation turn. This method lets hosts
+    /// adopt planning without depending on a newly added constructor parameter; enabling it after
+    /// history exists is rejected so the advertised tool set cannot change mid-conversation.
+    /// </summary>
+    public void EnablePlanning()
+    {
+        if (_conversationManager.Conversation.Turns.Count > 0)
+            throw new InvalidOperationException(
+                "Structured planning must be enabled before the first conversation turn.");
+        _enablePlanning = true;
+    }
 
     /// <summary>
     /// Process a user message and return a response.
@@ -854,7 +880,7 @@ public class SimpleAgent : IDisposable
                 {
                     Messages = allMessages,
                     Tools = toolDeclarations,
-                    SystemPrompt = _systemPrompt,
+                    SystemPrompt = BuildSystemPromptWithPlan(),
                     // Cache the stable system prompt prefix (no-op on auto-caching providers like
                     // OpenAI/DeepSeek; emits an Anthropic cache_control breakpoint). The system
                     // prompt is byte-stable for the agent's lifetime, unlike the compacted history.
@@ -917,8 +943,17 @@ public class SimpleAgent : IDisposable
                     // model chose to issue these calls together. Per-call exceptions are captured
                     // as that call's error result (isolation); OperationCanceledException is NOT
                     // captured — it is rethrown so it cancels the whole run.
+                    // Apply internal plan updates before starting dependent external tools from
+                    // the same model response. Hosts therefore see the new plan before the next
+                    // action begins, while result messages still preserve the model's call order.
+                    var planResults = new Dictionary<string, Message>(StringComparer.Ordinal);
+                    foreach (var toolCall in response.ToolCalls.Where(IsPlanToolCall))
+                        planResults[toolCall.Id] = ExecutePlanUpdate(toolCall);
+
                     var toolTasks = response.ToolCalls
-                        .Select(toolCall => ExecuteToolCallAsync(toolCall, runToken))
+                        .Select(toolCall => planResults.TryGetValue(toolCall.Id, out var planResult)
+                            ? Task.FromResult(planResult)
+                            : ExecuteToolCallAsync(toolCall, runToken))
                         .ToList();
 
                     // Task.WhenAll surfaces the first faulting task's exception; since each task
@@ -1323,6 +1358,114 @@ public class SimpleAgent : IDisposable
         }
     }
 
+    private bool IsPlanToolCall(Andy.Model.Model.ToolCall toolCall) =>
+        _enablePlanning &&
+        toolCall.Name.Equals("update_plan", StringComparison.Ordinal);
+
+    private string BuildSystemPromptWithPlan()
+    {
+        if (!_enablePlanning)
+            return _systemPrompt;
+
+        var builder = new StringBuilder(_systemPrompt);
+        builder.AppendLine()
+            .AppendLine()
+            .AppendLine("Structured planning is available through update_plan.")
+            .AppendLine("Use it for multi-step work, keep stable item ids, update statuses as work progresses,")
+            .AppendLine("and do not create a plan for a simple one-step response.");
+
+        var plan = CurrentPlan;
+        if (plan is { Items.Count: > 0 })
+        {
+            builder.AppendLine()
+                .AppendLine($"Current plan (revision {plan.Revision}):");
+            foreach (var item in plan.Items)
+            {
+                var marker = item.Status switch
+                {
+                    AgentPlanItemStatus.Pending => "[ ]",
+                    AgentPlanItemStatus.InProgress => "[>]",
+                    AgentPlanItemStatus.Completed => "[x]",
+                    _ => "[?]",
+                };
+                builder.AppendLine($"{marker} {item.Id}: {item.Text}");
+            }
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private Message ExecutePlanUpdate(Andy.Model.Model.ToolCall toolCall)
+    {
+        var applied = _planState.Apply(toolCall.ArgumentsJson);
+        string resultContent;
+        if (applied.IsSuccessful)
+        {
+            var plan = applied.Plan!;
+            resultContent = JsonSerializer.Serialize(new
+            {
+                success = true,
+                revision = plan.Revision,
+                items = plan.Items.Select(item => new
+                {
+                    id = item.Id,
+                    text = item.Text,
+                    status = AgentPlanState.StatusName(item.Status),
+                }),
+            });
+
+            if (applied.Change is { } kind)
+                EmitPlanChanged(kind, plan);
+        }
+        else
+        {
+            resultContent = JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = applied.Error,
+            });
+        }
+
+        return new Message
+        {
+            Role = Role.Tool,
+            Content = resultContent,
+            ToolResults = new List<Andy.Model.Model.ToolResult>
+            {
+                new()
+                {
+                    CallId = toolCall.Id,
+                    Name = toolCall.Name,
+                    ResultJson = resultContent,
+                    IsError = !applied.IsSuccessful,
+                },
+            },
+        };
+    }
+
+    private void EmitPlanChanged(AgentPlanChangeKind kind, AgentPlanSnapshot plan)
+    {
+        var handlers = PlanChanged;
+        if (handlers == null) return;
+
+        var args = new AgentPlanChangedEventArgs
+        {
+            Kind = kind,
+            Plan = plan,
+        };
+        foreach (EventHandler<AgentPlanChangedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, args);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Plan event consumer threw.");
+            }
+        }
+    }
+
     /// <summary>
     /// Executes a single tool call (parse args → execute → shape the result Message) with the
     /// same try/catch semantics used for serial execution, so it is safe to run concurrently
@@ -1460,6 +1603,7 @@ public class SimpleAgent : IDisposable
             // agent-owned manager is the only way to actually empty the history.
             _conversationManager = new DefaultConversationManager();
         }
+        _planState.Clear();
         _logger?.LogInformation("Conversation history cleared");
     }
 
@@ -1506,7 +1650,7 @@ public class SimpleAgent : IDisposable
             });
         }
 
-        return new TranscriptSnapshot { Turns = turns };
+        return new TranscriptSnapshot { Turns = turns, Plan = CurrentPlan };
     }
 
     /// <summary>
@@ -1530,6 +1674,8 @@ public class SimpleAgent : IDisposable
                 "RestoreTranscript requires an empty conversation; restore into a fresh agent.");
 
         // Validate and materialize EVERYTHING before mutating any agent state.
+        var restoredPlan = new AgentPlanState();
+        restoredPlan.Restore(snapshot.Plan);
         var restored = new List<Turn>();
         for (var t = 0; t < snapshot.Turns.Count; t++)
         {
@@ -1592,6 +1738,7 @@ public class SimpleAgent : IDisposable
 
         foreach (var turn in restored)
             _conversationManager.AddTurn(turn);
+        _planState.Restore(restoredPlan.Current);
 
         _logger?.LogInformation("Restored transcript with {TurnCount} turn(s).", restored.Count);
     }
@@ -1953,7 +2100,10 @@ public class SimpleAgent : IDisposable
     {
         var declarations = new List<ToolDeclaration>();
 
-        foreach (var registration in _toolRegistry.Tools.Where(t => t.IsEnabled))
+        foreach (var registration in _toolRegistry.Tools.Where(t =>
+                     t.IsEnabled &&
+                     (!_enablePlanning ||
+                      !t.Metadata.Id.Equals("update_plan", StringComparison.Ordinal))))
         {
             var metadata = registration.Metadata;
 
@@ -2012,6 +2162,54 @@ public class SimpleAgent : IDisposable
                 Name = metadata.Id,
                 Description = metadata.Description,
                 Parameters = parameters
+            });
+        }
+
+        if (_enablePlanning)
+        {
+            declarations.Add(new ToolDeclaration
+            {
+                Name = "update_plan",
+                Description =
+                    "Create or update the current work plan. Send the complete ordered item list. " +
+                    "Use stable ids across revisions, mark only one item in_progress, and mark work " +
+                    "completed as soon as it finishes. Use this only for multi-step work.",
+                Parameters = new Dictionary<string, object>
+                {
+                    ["type"] = "object",
+                    ["properties"] = new Dictionary<string, object>
+                    {
+                        ["items"] = new Dictionary<string, object>
+                        {
+                            ["type"] = "array",
+                            ["description"] = "The complete ordered plan snapshot.",
+                            ["items"] = new Dictionary<string, object>
+                            {
+                                ["type"] = "object",
+                                ["properties"] = new Dictionary<string, object>
+                                {
+                                    ["id"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "string",
+                                        ["description"] = "Stable item id reused across updates.",
+                                    },
+                                    ["text"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "string",
+                                        ["description"] = "Concise user-visible task text.",
+                                    },
+                                    ["status"] = new Dictionary<string, object>
+                                    {
+                                        ["type"] = "string",
+                                        ["enum"] = new[] { "pending", "in_progress", "completed" },
+                                    },
+                                },
+                                ["required"] = new[] { "id", "text", "status" },
+                            },
+                        },
+                    },
+                    ["required"] = new[] { "items" },
+                },
             });
         }
 
