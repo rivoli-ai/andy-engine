@@ -73,7 +73,7 @@ public class SimpleAgent : IDisposable
         _enablePromptCaching = enablePromptCaching;
         _extraBody = extraBody;
         _maxImageBytes = maxImageBytes > 0 ? maxImageBytes : MultimodalMessage.DefaultMaxImageBytes;
-        ValidateContinuationPolicy(continuationPolicy, maxTurns);
+        ValidateContinuationPolicy(continuationPolicy, maxTurns, maxOutputTokens);
         _continuationPolicy = continuationPolicy;
         _enablePlanning = enablePlanning;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
@@ -654,6 +654,7 @@ public class SimpleAgent : IDisposable
         var lastAssistantWasInterleaved = false;
         // Whether the one-time "you're approaching the turn budget, wrap up" nudge has been sent.
         var wrapUpNudgeSent = false;
+        var softDeadlineNudgeSent = false;
 
         var turnCount = 0;
         var windowTurnCount = 0;
@@ -661,8 +662,12 @@ public class SimpleAgent : IDisposable
         var continuationsUsed = 0;
         var windowAuditStart = 0;
         var checkpointOccurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+        var recentToolRoundFingerprints = new Queue<string>();
         var continuationRunId = Guid.NewGuid().ToString("N");
         var startTime = DateTime.UtcNow;
+        var currentMaxOutputTokens = _maxOutputTokens;
+        var consecutiveOutputLimitResponses = 0;
+        var totalOutputLimitResponses = 0;
         var maxElapsed = _continuationPolicy?.MaxElapsedTime;
         using var elapsedCts = maxElapsed is not null
             ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
@@ -700,7 +705,8 @@ public class SimpleAgent : IDisposable
         void EmitContinuation(
             AgentContinuationEventKind kind,
             string? checkpoint = null,
-            string? stopReason = null)
+            string? stopReason = null,
+            string? finishReason = null)
         {
             if (_continuationPolicy is null || ContinuationProgress is null)
                 return;
@@ -716,6 +722,10 @@ public class SimpleAgent : IDisposable
                     Timestamp = DateTimeOffset.UtcNow,
                     Checkpoint = checkpoint,
                     StopReason = stopReason,
+                    FinishReason = finishReason,
+                    MaxOutputTokens = currentMaxOutputTokens,
+                    ConsecutiveOutputLimitResponses = consecutiveOutputLimitResponses,
+                    TotalOutputLimitResponses = totalOutputLimitResponses,
                 });
             }
             catch (Exception eventEx)
@@ -833,6 +843,23 @@ public class SimpleAgent : IDisposable
                     continue;
                 }
 
+                if (_continuationPolicy?.SoftDeadline is { } softDeadline &&
+                    !softDeadlineNudgeSent &&
+                    DateTime.UtcNow - startTime >= softDeadline)
+                {
+                    var deadlineNudge = new Message
+                    {
+                        Role = Role.User,
+                        Content = "The run is approaching its wall-clock deadline. Stop exploring, "
+                                + "perform only essential verification or edits, and produce the best "
+                                + "complete final answer before time expires.",
+                    };
+                    requestWindowMessages.Add(deadlineNudge);
+                    allInterleavedMessages.Add(deadlineNudge);
+                    softDeadlineNudgeSent = true;
+                    EmitContinuation(AgentContinuationEventKind.SoftDeadlineReached);
+                }
+
                 turnCount++;
                 windowTurnCount++;
                 _logger?.LogDebug(
@@ -891,7 +918,7 @@ public class SimpleAgent : IDisposable
                     Config = new LlmClientConfig
                     {
                         // Temperature defaults to null, allowing models to use their own defaults
-                        MaxTokens = _maxOutputTokens,
+                        MaxTokens = currentMaxOutputTokens,
                         TopP = 1.0m
                     }
                 };
@@ -919,6 +946,14 @@ public class SimpleAgent : IDisposable
                 // Check if we have tool calls
                 if (response.HasToolCalls)
                 {
+                    if (consecutiveOutputLimitResponses > 0)
+                    {
+                        consecutiveOutputLimitResponses = 0;
+                        EmitContinuation(
+                            AgentContinuationEventKind.OutputLimitRecovered,
+                            finishReason: response.FinishReason);
+                    }
+
                     _logger?.LogInformation("LLM requested {ToolCallCount} tool calls", response.ToolCalls.Count);
 
                     // Store the intermediate assistant message (with ToolCalls) for proper context reconstruction
@@ -968,6 +1003,35 @@ public class SimpleAgent : IDisposable
                     requestWindowMessages.AddRange(toolResults);
                     allInterleavedMessages.AddRange(toolResults);
 
+                    if (_continuationPolicy?.RollingToolRoundWindow > 0)
+                    {
+                        var toolRoundMessages = new List<Message> { response.AssistantMessage };
+                        toolRoundMessages.AddRange(toolResults);
+                        var fingerprint = BuildProgressFingerprint(toolRoundMessages);
+                        recentToolRoundFingerprints.Enqueue(fingerprint);
+                        while (recentToolRoundFingerprints.Count >
+                               _continuationPolicy.RollingToolRoundWindow)
+                        {
+                            recentToolRoundFingerprints.Dequeue();
+                        }
+
+                        var equivalentRounds = recentToolRoundFingerprints.Count(
+                            candidate => string.Equals(
+                                candidate,
+                                fingerprint,
+                                StringComparison.Ordinal));
+                        if (equivalentRounds >= _continuationPolicy.EquivalentToolRoundLimit)
+                        {
+                            EmitContinuation(
+                                AgentContinuationEventKind.NoProgressDetected,
+                                stopReason: "no_progress");
+                            return StopRun(
+                                "no_progress",
+                                "Stopped because equivalent tool calls and outcomes repeated "
+                                + "without observable progress.");
+                        }
+                    }
+
                     // Continue loop to get LLM's response to tool results
                     continue;
                 }
@@ -975,13 +1039,23 @@ public class SimpleAgent : IDisposable
                 // No tool calls, but the turn was cut off by the output-token limit
                 // (FinishReason "length"/"max_tokens"). The model was interrupted mid-task,
                 // NOT finished — treating this as a final answer ends the run with a partial
-                // or empty result (e.g. an empty patch). Nudge it to continue instead. This is
-                // bounded by _maxTurns, so it cannot loop forever.
+                // or empty result (e.g. an empty patch). Nudge it to continue under the bounded
+                // consecutive and total output-limit recovery policy.
                 if (IsTruncatedByOutputLimit(response.FinishReason))
                 {
+                    consecutiveOutputLimitResponses++;
+                    totalOutputLimitResponses++;
                     _logger?.LogWarning(
-                        "LLM response truncated by output-token limit (FinishReason: {FinishReason}) on turn {TurnCount}; continuing.",
-                        response.FinishReason, turnCount);
+                        "LLM response truncated by output-token limit (FinishReason: {FinishReason}) "
+                        + "on turn {TurnCount}; consecutive {ConsecutiveCount}, total {TotalCount}.",
+                        response.FinishReason,
+                        turnCount,
+                        consecutiveOutputLimitResponses,
+                        totalOutputLimitResponses);
+
+                    EmitContinuation(
+                        AgentContinuationEventKind.OutputLimitReached,
+                        finishReason: response.FinishReason);
 
                     // Record the partial assistant message and the nudge in the interleaved log
                     // so the persisted Turn (and any later replay/compaction of it) faithfully
@@ -996,6 +1070,26 @@ public class SimpleAgent : IDisposable
                     if (streamedTextThisTurn)
                         onResponseDelta?.Invoke(AgentResponseDelta.DiscardedTurn(turnCount));
 
+                    var maxConsecutive = _continuationPolicy?.MaxConsecutiveOutputLimitResponses ?? 3;
+                    var maxTotal = _continuationPolicy?.MaxTotalOutputLimitResponses ?? 8;
+                    if (consecutiveOutputLimitResponses >= maxConsecutive ||
+                        totalOutputLimitResponses >= maxTotal)
+                    {
+                        return StopRun(
+                            "output_limit_exhausted",
+                            "The model repeatedly exhausted its output-token allowance without "
+                            + "producing a tool call or complete answer.");
+                    }
+
+                    if (_continuationPolicy?.MaxOutputTokensCeiling is { } outputCeiling &&
+                        currentMaxOutputTokens < outputCeiling)
+                    {
+                        currentMaxOutputTokens = (int)Math.Min(
+                            outputCeiling,
+                            (long)currentMaxOutputTokens *
+                                _continuationPolicy.OutputTokenGrowthFactor);
+                    }
+
                     var nudge = new Message
                     {
                         Role = Role.User,
@@ -1009,6 +1103,14 @@ public class SimpleAgent : IDisposable
                 }
 
                 // No tool calls - we have a final response
+                if (consecutiveOutputLimitResponses > 0)
+                {
+                    consecutiveOutputLimitResponses = 0;
+                    EmitContinuation(
+                        AgentContinuationEventKind.OutputLimitRecovered,
+                        finishReason: response.FinishReason);
+                }
+
                 _logger?.LogInformation("LLM provided final response");
 
                 // Streaming consumers got the final text incrementally when the provider streams;
@@ -1091,7 +1193,8 @@ public class SimpleAgent : IDisposable
 
     private static void ValidateContinuationPolicy(
         AgentContinuationPolicy? policy,
-        int maxTurns)
+        int maxTurns,
+        int maxOutputTokens)
     {
         if (policy is null)
             return;
@@ -1110,6 +1213,57 @@ public class SimpleAgent : IDisposable
         if (policy.MaxElapsedTime is { } elapsed && elapsed <= TimeSpan.Zero)
             throw new ArgumentException(
                 "MaxElapsedTime must be positive.",
+                nameof(policy));
+        if (policy.SoftDeadline is { } softDeadline && softDeadline <= TimeSpan.Zero)
+            throw new ArgumentException(
+                "SoftDeadline must be positive.",
+                nameof(policy));
+        if (policy.SoftDeadline is { } soft &&
+            policy.MaxElapsedTime is { } hard &&
+            soft >= hard)
+        {
+            throw new ArgumentException(
+                "SoftDeadline must be smaller than MaxElapsedTime.",
+                nameof(policy));
+        }
+        if (policy.MaxConsecutiveOutputLimitResponses < 1)
+            throw new ArgumentException(
+                "MaxConsecutiveOutputLimitResponses must be at least 1.",
+                nameof(policy));
+        if (policy.MaxTotalOutputLimitResponses <
+            policy.MaxConsecutiveOutputLimitResponses)
+        {
+            throw new ArgumentException(
+                "MaxTotalOutputLimitResponses must be greater than or equal to "
+                + "MaxConsecutiveOutputLimitResponses.",
+                nameof(policy));
+        }
+        if (policy.MaxOutputTokensCeiling is { } ceiling && ceiling < 1)
+            throw new ArgumentException(
+                "MaxOutputTokensCeiling must be at least 1.",
+                nameof(policy));
+        if (policy.MaxOutputTokensCeiling is { } configuredCeiling &&
+            configuredCeiling < maxOutputTokens)
+            throw new ArgumentException(
+                "MaxOutputTokensCeiling cannot be smaller than maxOutputTokens.",
+                nameof(policy));
+        if (policy.OutputTokenGrowthFactor < 2)
+            throw new ArgumentException(
+                "OutputTokenGrowthFactor must be at least 2.",
+                nameof(policy));
+        if (policy.RollingToolRoundWindow < 0)
+            throw new ArgumentException(
+                "RollingToolRoundWindow cannot be negative.",
+                nameof(policy));
+        if (policy.RollingToolRoundWindow > 0 &&
+            policy.EquivalentToolRoundLimit < 2)
+            throw new ArgumentException(
+                "EquivalentToolRoundLimit must be at least 2 when rolling detection is enabled.",
+                nameof(policy));
+        if (policy.RollingToolRoundWindow > 0 &&
+            policy.EquivalentToolRoundLimit > policy.RollingToolRoundWindow)
+            throw new ArgumentException(
+                "EquivalentToolRoundLimit cannot exceed RollingToolRoundWindow.",
                 nameof(policy));
         if (policy.RecentToolCallRounds < 1)
             throw new ArgumentException(

@@ -240,6 +240,96 @@ public class SimpleAgentContinuationTests
     }
 
     [Fact]
+    public async Task SoftDeadline_NudgesFinalizationOnce_BeforeHardDeadline()
+    {
+        var requests = new List<LlmRequest>();
+        var call = 0;
+        var provider = new Mock<ILlmProvider>();
+        provider.Setup(p => p.CompleteAsync(
+                It.IsAny<LlmRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<LlmRequest, CancellationToken>((request, _) => requests.Add(request))
+            .ReturnsAsync(() =>
+                Interlocked.Increment(ref call) == 1
+                    ? ToolCallResponse(1)
+                    : FinalResponse());
+        var executor = new Mock<IToolExecutor>();
+        executor.Setup(e => e.ExecuteAsync(
+                "work",
+                It.IsAny<Dictionary<string, object?>>(),
+                It.IsAny<ToolExecutionContext>()))
+            .Returns(async () =>
+            {
+                await Task.Delay(50);
+                return new ToolExecutionResult
+                {
+                    IsSuccessful = true,
+                    Data = "completed",
+                };
+            });
+        var events = new List<AgentContinuationEventArgs>();
+        var agent = CreateAgent(
+            provider.Object,
+            executor.Object,
+            maxTurns: 5,
+            new AgentContinuationPolicy
+            {
+                MaxTotalTurns = 10,
+                MaxContinuationWindows = 2,
+                SoftDeadline = TimeSpan.FromMilliseconds(20),
+                MaxElapsedTime = TimeSpan.FromSeconds(2),
+            });
+        agent.ContinuationProgress += (_, e) => events.Add(e);
+
+        var result = await agent.ProcessMessageAsync("Finish before the deadline.");
+
+        result.Success.Should().BeTrue();
+        requests.Should().HaveCount(2);
+        requests[1].Messages.Should().ContainSingle(
+            message => message.Role == Role.User &&
+                       (message.Content ?? string.Empty).Contains(
+                           "approaching its wall-clock deadline",
+                           StringComparison.Ordinal));
+        events.Count(e => e.Kind == AgentContinuationEventKind.SoftDeadlineReached)
+            .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RollingToolRoundGuard_StopsEquivalentHighChurnLoop()
+    {
+        var call = 0;
+        var provider = new Mock<ILlmProvider>();
+        provider.Setup(p => p.CompleteAsync(
+                It.IsAny<LlmRequest>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() => ToolCallResponse(
+                Interlocked.Increment(ref call),
+                equivalent: true));
+        var events = new List<AgentContinuationEventArgs>();
+        var agent = CreateAgent(
+            provider.Object,
+            CreateExecutor(_ => "unchanged").Object,
+            maxTurns: 10,
+            new AgentContinuationPolicy
+            {
+                MaxTotalTurns = 20,
+                MaxContinuationWindows = 2,
+                RollingToolRoundWindow = 5,
+                EquivalentToolRoundLimit = 3,
+            });
+        agent.ContinuationProgress += (_, e) => events.Add(e);
+
+        var result = await agent.ProcessMessageAsync("Make progress.");
+
+        result.Success.Should().BeFalse();
+        result.StopReason.Should().Be("no_progress");
+        result.TurnCount.Should().Be(3);
+        events.Should().Contain(
+            e => e.Kind == AgentContinuationEventKind.NoProgressDetected &&
+                 e.StopReason == "no_progress");
+    }
+
+    [Fact]
     public async Task EquivalentCheckpoints_StopNoProgressLoop()
     {
         var call = 0;

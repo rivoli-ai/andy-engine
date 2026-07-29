@@ -1,6 +1,6 @@
 # Bounded agent continuation
 
-Status: complete as of 2026-07-23.
+Status: complete, updated 2026-07-29.
 
 ## Purpose
 
@@ -33,10 +33,17 @@ directory/task state, and remaining-work instructions. Hosts can supply an async
 | All LLM turns | `MaxTotalTurns` | `continuation_total_turns_exceeded` |
 | Windows/checkpoints after the initial window | `MaxContinuationWindows` | `continuation_windows_exceeded` |
 | Optional wall-clock duration | `MaxElapsedTime` | `continuation_time_exceeded` |
+| Repeated output-limit responses | `MaxConsecutiveOutputLimitResponses`, `MaxTotalOutputLimitResponses` | `output_limit_exhausted` |
+| Repeated equivalent tool rounds | `RollingToolRoundWindow`, `EquivalentToolRoundLimit` | `no_progress` |
 | Repeated or oscillating progress | `EquivalentCheckpointLimit` | `continuation_no_progress` |
 
 External cancellation retains the existing contract: partial transcript state is committed, then
 `OperationCanceledException` propagates.
+
+`SoftDeadline` can add one finalization message before `MaxElapsedTime`. Output-limit recovery can
+increase the request allowance by `OutputTokenGrowthFactor` up to `MaxOutputTokensCeiling`; without
+a configured ceiling the constructor's output-token allowance remains fixed. Repeated truncations
+are bounded even when continuation is disabled.
 
 ## Host integration
 
@@ -46,11 +53,16 @@ Subscribe to `SimpleAgent.ContinuationProgress` to receive correlated structured
 - `WindowCompleted`
 - `CheckpointCreated`
 - `NoProgressDetected`
+- `OutputLimitReached`
+- `OutputLimitRecovered`
+- `SoftDeadlineReached`
 - `Stopped`
 - `Completed`
 
 Every event includes a run identifier, window number, total turns, and timestamp. Checkpoint and
 terminal events also carry checkpoint text or a machine-readable stop reason as applicable.
+Output-limit events include the finish reason, active allowance, and consecutive and total
+truncation counts.
 
 ## Acceptance checklist
 
@@ -63,6 +75,9 @@ terminal events also carry checkpoint text or a machine-readable stop reason as 
 - [x] Full transcript export/restore preserves continued-run fidelity.
 - [x] Omitting the continuation policy preserves existing max-turn behavior.
 - [x] Structured lifecycle events let hosts render continuation without parsing response text.
+- [x] Repeated output-limit responses recover within a ceiling or stop distinctly.
+- [x] A soft wall-clock threshold nudges finalization before hard cancellation.
+- [x] Repeated equivalent tool rounds trip a rolling no-progress guard.
 
 ## Completion summary
 
@@ -70,3 +85,7 @@ On 2026-07-23, bounded continuation was added to `SimpleAgent` with opt-in polic
 checkpoint generation, recent correlated tool-round retention, global ceilings, elapsed-time
 cancellation, oscillation detection, structured host events, transcript-safe cancellation, public
 documentation, and focused regression coverage.
+
+On 2026-07-29, the policy gained bounded adaptive output-limit recovery, one-shot soft-deadline
+guidance, rolling equivalent-tool-round detection, distinct stop reasons, and structured telemetry
+for headless and interactive hosts.
