@@ -23,6 +23,47 @@ public sealed record AgentContinuationPolicy
     public TimeSpan? MaxElapsedTime { get; init; }
 
     /// <summary>
+    /// Optional elapsed-time threshold at which the model receives one finalization nudge.
+    /// When <see cref="MaxElapsedTime"/> is also set, this value must be smaller.
+    /// </summary>
+    public TimeSpan? SoftDeadline { get; init; }
+
+    /// <summary>
+    /// Maximum number of consecutive output-limit responses tolerated before the run stops with
+    /// <c>output_limit_exhausted</c>.
+    /// </summary>
+    public int MaxConsecutiveOutputLimitResponses { get; init; } = 3;
+
+    /// <summary>
+    /// Maximum number of output-limit responses across the whole run before the run stops with
+    /// <c>output_limit_exhausted</c>.
+    /// </summary>
+    public int MaxTotalOutputLimitResponses { get; init; } = 8;
+
+    /// <summary>
+    /// Optional upper bound for adaptive output-token growth. A null value keeps the
+    /// <see cref="SimpleAgent"/> constructor's output-token value fixed.
+    /// </summary>
+    public int? MaxOutputTokensCeiling { get; init; }
+
+    /// <summary>
+    /// Integer multiplier used when increasing the output-token allowance after truncation.
+    /// </summary>
+    public int OutputTokenGrowthFactor { get; init; } = 2;
+
+    /// <summary>
+    /// Number of recent tool rounds considered by rolling no-progress detection. A value of zero
+    /// disables the rolling guard.
+    /// </summary>
+    public int RollingToolRoundWindow { get; init; }
+
+    /// <summary>
+    /// Number of equivalent tool-call/result fingerprints within the rolling window that stops
+    /// the run with <c>no_progress</c>.
+    /// </summary>
+    public int EquivalentToolRoundLimit { get; init; } = 3;
+
+    /// <summary>
     /// Number of recent, complete assistant tool-call/result rounds retained verbatim beside the
     /// compact checkpoint in the next request window.
     /// </summary>
@@ -104,6 +145,15 @@ public enum AgentContinuationEventKind
     /// <summary>A repeated or oscillating progress checkpoint tripped the guard.</summary>
     NoProgressDetected,
 
+    /// <summary>The model exhausted the output allowance for a response.</summary>
+    OutputLimitReached,
+
+    /// <summary>The model made meaningful progress after one or more output-limit responses.</summary>
+    OutputLimitRecovered,
+
+    /// <summary>The run crossed its soft deadline and received finalization guidance.</summary>
+    SoftDeadlineReached,
+
     /// <summary>A global continuation ceiling stopped the run.</summary>
     Stopped,
 
@@ -136,4 +186,16 @@ public sealed class AgentContinuationEventArgs : EventArgs
 
     /// <summary>Machine-readable stop reason for terminal bounded stops; otherwise null.</summary>
     public string? StopReason { get; init; }
+
+    /// <summary>Provider finish reason associated with an output-limit event; otherwise null.</summary>
+    public string? FinishReason { get; init; }
+
+    /// <summary>Current output-token allowance at the time of the event; otherwise null.</summary>
+    public int? MaxOutputTokens { get; init; }
+
+    /// <summary>Consecutive output-limit response count at the time of the event.</summary>
+    public int ConsecutiveOutputLimitResponses { get; init; }
+
+    /// <summary>Total output-limit response count for the run at the time of the event.</summary>
+    public int TotalOutputLimitResponses { get; init; }
 }

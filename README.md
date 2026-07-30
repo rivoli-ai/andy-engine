@@ -144,7 +144,11 @@ using var agent = new SimpleAgent(
     {
         MaxTotalTurns = 40,
         MaxContinuationWindows = 3,
+        SoftDeadline = TimeSpan.FromMinutes(18),
         MaxElapsedTime = TimeSpan.FromMinutes(20),
+        MaxOutputTokensCeiling = 16_384,
+        RollingToolRoundWindow = 8,
+        EquivalentToolRoundLimit = 3,
         RecentToolCallRounds = 3,
         EquivalentCheckpointLimit = 1,
     });
@@ -170,6 +174,12 @@ The policy has independent hard ceilings:
   the initial window.
 - `MaxElapsedTime` optionally cancels in-flight provider, tool, or checkpoint work when wall-clock
   time expires.
+- `SoftDeadline` sends one finalization nudge before the hard elapsed-time ceiling.
+- `MaxConsecutiveOutputLimitResponses`, `MaxTotalOutputLimitResponses`, and
+  `MaxOutputTokensCeiling` bound recovery from `length` or `max_tokens` responses. The allowance
+  grows up to the ceiling and stops with `output_limit_exhausted` if recovery is exhausted.
+- `RollingToolRoundWindow` and `EquivalentToolRoundLimit` stop repeated equivalent tool calls and
+  outcomes with `no_progress`.
 - `EquivalentCheckpointLimit` stops repeated or oscillating progress with
   `continuation_no_progress`.
 
@@ -178,8 +188,9 @@ Other continuation limit stop reasons are `continuation_total_turns_exceeded`,
 propagates as `OperationCanceledException` after the partial transcript is committed.
 
 Hosts can render `ContinuationProgress` events directly. Event kinds cover window start/completion,
-checkpoint creation, no-progress detection, bounded stops, and successful completion. An optional
-asynchronous `CheckpointFactory` can customize checkpoint text from immutable
+checkpoint creation, output-limit recovery, soft-deadline guidance, no-progress detection, bounded
+stops, and successful completion. An optional asynchronous `CheckpointFactory` can customize
+checkpoint text from immutable
 `AgentCheckpointContext` data; it receives the run cancellation token and must not execute tools.
 See [the bounded continuation design](docs/bounded-continuation.md) for the execution model,
 stop-reason table, event contract, and acceptance checklist.
