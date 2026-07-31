@@ -409,7 +409,7 @@ public class SimpleAgentChildTasksTests : IDisposable
     }
 
     [Fact]
-    public async Task SpuriousOperationCanceled_WithNoDeadline_IsFailed_NotBudgetExceeded()
+    public async Task SpuriousOperationCanceled_WithNoDeadline_IsRetriedThenFailed_NotBudgetExceeded()
     {
         // An HttpClient-style internal timeout: TaskCanceledException with no token cancelled.
         var provider = new Mock<ILlmProvider>();
@@ -424,7 +424,10 @@ public class SimpleAgentChildTasksTests : IDisposable
 
         var result = Assert.Single(report.Results);
         Assert.Equal(ChildTaskStatus.Failed, result.Status);
-        Assert.Equal("error", result.StopReason);
+        Assert.Contains("timed out while reading", result.StopReason);
+        provider.Verify(
+            p => p.CompleteAsync(It.IsAny<LlmRequest>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
     }
 
     // ---- partial failure -----------------------------------------------------------------

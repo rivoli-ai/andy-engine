@@ -20,6 +20,8 @@ namespace Andy.Engine;
 /// </summary>
 public class SimpleAgent : IDisposable
 {
+    private const int MaxTransientLlmTimeoutRetries = 1;
+
     private readonly ILlmProvider _llmProvider;
     private readonly IToolRegistry _toolRegistry;
     private readonly IToolExecutor _toolExecutor;
@@ -933,7 +935,11 @@ public class SimpleAgent : IDisposable
                 }
 
                 var (response, streamedTextThisTurn) =
-                    await GetLlmResponseAsync(request, turnCount, onResponseDelta, runToken);
+                    await GetLlmResponseWithRetryAsync(
+                        request,
+                        turnCount,
+                        onResponseDelta,
+                        runToken);
 
                 _logger?.LogInformation("LLM response - Content: '{Content}', HasToolCalls: {HasToolCalls}, FinishReason: {FinishReason}",
                     response.Content, response.HasToolCalls, response.FinishReason);
@@ -1988,6 +1994,42 @@ public class SimpleAgent : IDisposable
     /// the returned flag then reports that no text was streamed so the caller can emit the
     /// final content as a single chunk.
     /// </summary>
+    private async Task<(LlmResponse Response, bool StreamedText)> GetLlmResponseWithRetryAsync(
+        LlmRequest request,
+        int turn,
+        Action<AgentResponseDelta>? onResponseDelta,
+        CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await GetLlmResponseAsync(
+                    request,
+                    turn,
+                    onResponseDelta,
+                    cancellationToken);
+            }
+            catch (InternalLlmTimeoutException ex)
+                when (ex.Retryable && attempt < MaxTransientLlmTimeoutRetries)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "Provider {Provider} timed out before producing response data; "
+                        + "retrying LLM request ({Attempt}/{MaxAttempts}).",
+                    _llmProvider.Name,
+                    attempt + 1,
+                    MaxTransientLlmTimeoutRetries);
+            }
+            catch (InternalLlmTimeoutException ex)
+            {
+                throw new TimeoutException(
+                    $"Provider '{_llmProvider.Name}' timed out while reading the LLM response.",
+                    ex);
+            }
+        }
+    }
+
     private async Task<(LlmResponse Response, bool StreamedText)> GetLlmResponseAsync(
         LlmRequest request,
         int turn,
@@ -1995,7 +2037,18 @@ public class SimpleAgent : IDisposable
         CancellationToken cancellationToken)
     {
         if (onResponseDelta is null)
-            return (await _llmProvider.CompleteAsync(request, cancellationToken), false);
+        {
+            try
+            {
+                return (await _llmProvider.CompleteAsync(request, cancellationToken), false);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new InternalLlmTimeoutException(
+                    retryable: true,
+                    innerException: ex);
+            }
+        }
 
         var content = new StringBuilder();
         var toolCalls = new List<Andy.Model.Model.ToolCall>();
@@ -2013,6 +2066,12 @@ public class SimpleAgent : IDisposable
                 try
                 {
                     moved = await enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new InternalLlmTimeoutException(
+                        retryable: !streamedText && toolCalls.Count == 0,
+                        innerException: ex);
                 }
                 catch (Exception ex) when (!streamedText && toolCalls.Count == 0 &&
                                            ex is NotSupportedException or NotImplementedException)
@@ -2063,6 +2122,14 @@ public class SimpleAgent : IDisposable
             Usage = usage,
         };
         return (response, streamedText);
+    }
+
+    private sealed class InternalLlmTimeoutException(
+        bool retryable,
+        OperationCanceledException innerException)
+        : Exception("The provider cancelled an LLM response without caller cancellation.", innerException)
+    {
+        public bool Retryable { get; } = retryable;
     }
 
     // Rough chars-per-token factor shared by the budget estimates below (~4 chars/token, the
