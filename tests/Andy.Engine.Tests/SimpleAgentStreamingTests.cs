@@ -242,4 +242,86 @@ public class SimpleAgentStreamingTests
 
         deltas.Should().ContainSingle().Which.Text.Should().Be("part");
     }
+
+    [Fact]
+    public async Task InternalProviderTimeoutBeforeFirstChunk_RetriesOnce()
+    {
+        static async IAsyncEnumerable<LlmStreamResponse> TimedOutStream(
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await Task.Yield();
+            throw new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        var provider = new Mock<ILlmProvider>();
+        var call = 0;
+        provider.Setup(p => p.StreamCompleteAsync(
+                It.IsAny<LlmRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns((LlmRequest _, CancellationToken ct) =>
+            {
+                call++;
+                return call == 1
+                    ? TimedOutStream(ct)
+                    : Stream(new[] { TextChunk("recovered"), FinalChunk("stop") }, ct);
+            });
+
+        var agent = new SimpleAgent(
+            provider.Object,
+            CreateRegistry().Object,
+            CreateExecutor().Object,
+            "system",
+            maxTurns: 5);
+
+        var deltas = new List<AgentResponseDelta>();
+        var result = await agent.ProcessMessageAsync("hi", deltas.Add);
+
+        result.Success.Should().BeTrue();
+        result.Response.Should().Be("recovered");
+        call.Should().Be(2);
+        deltas.Should().ContainSingle().Which.Text.Should().Be("recovered");
+    }
+
+    [Fact]
+    public async Task InternalProviderTimeoutAfterText_DoesNotReplayPartialStream()
+    {
+        static async IAsyncEnumerable<LlmStreamResponse> PartialTimedOutStream(
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            await Task.Yield();
+            yield return TextChunk("partial");
+            throw new TaskCanceledException(
+                "The request was canceled due to the configured HttpClient.Timeout");
+        }
+
+        var provider = new Mock<ILlmProvider>();
+        var call = 0;
+        provider.Setup(p => p.StreamCompleteAsync(
+                It.IsAny<LlmRequest>(),
+                It.IsAny<CancellationToken>()))
+            .Returns((LlmRequest _, CancellationToken ct) =>
+            {
+                call++;
+                return PartialTimedOutStream(ct);
+            });
+
+        var agent = new SimpleAgent(
+            provider.Object,
+            CreateRegistry().Object,
+            CreateExecutor().Object,
+            "system",
+            maxTurns: 5);
+
+        var deltas = new List<AgentResponseDelta>();
+        var result = await agent.ProcessMessageAsync("hi", deltas.Add);
+
+        result.Success.Should().BeFalse();
+        result.StopReason.Should().Contain("timed out while reading");
+        call.Should().Be(1);
+        deltas.Should().ContainSingle().Which.Text.Should().Be("partial");
+    }
 }
