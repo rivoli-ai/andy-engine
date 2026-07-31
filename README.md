@@ -45,7 +45,7 @@ planner/critic layer — the loop mirrors the pattern used by successful CLI age
 dotnet add package Andy.Engine --version 1.0.0-alpha.1
 ```
 
-Target framework: **.NET 8.0**.
+Target framework: **.NET 10.0**.
 
 ## Quick Start
 
