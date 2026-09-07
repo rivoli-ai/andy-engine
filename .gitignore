@@ -84,3 +84,4 @@ TestResult.xml
 nunit-*.xml
 # SWE-bench run outputs
 swebench-runs/
+.coord/state/
