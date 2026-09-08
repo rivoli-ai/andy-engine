@@ -23,6 +23,7 @@ public class SimpleAgent : IDisposable
     private const int MaxTransientLlmTimeoutRetries = 1;
 
     private readonly ILlmProvider _llmProvider;
+    private readonly ILlmProvider _errorReportingProvider;
     private readonly IToolRegistry _toolRegistry;
     private readonly IToolExecutor _toolExecutor;
     private readonly ILogger<SimpleAgent>? _logger;
@@ -64,6 +65,7 @@ public class SimpleAgent : IDisposable
         bool enablePlanning = false)
     {
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
+        _errorReportingProvider = new Andy.Llm.Errors.ErrorReportingLlmProvider(_llmProvider);
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _toolExecutor = toolExecutor ?? throw new ArgumentNullException(nameof(toolExecutor));
         _systemPrompt = systemPrompt ?? throw new ArgumentNullException(nameof(systemPrompt));
@@ -1181,8 +1183,9 @@ public class SimpleAgent : IDisposable
             }
 
             // Include exception details in stop reason so it's visible in benchmark results
+            var providerError = (ex as Andy.Llm.Errors.LlmProviderException)?.Error;
             var errorMessage = ex.Message;
-            if (ex.InnerException != null)
+            if (providerError == null && ex.InnerException != null)
             {
                 errorMessage += $"\nInner exception: {ex.InnerException.Message}";
             }
@@ -1193,7 +1196,8 @@ public class SimpleAgent : IDisposable
                 TurnCount: turnCount,
                 Duration: DateTime.UtcNow - startTime,
                 StopReason: $"error: {errorMessage}"
-            );
+            )
+            { ProviderError = providerError };
         }
     }
 
@@ -2040,7 +2044,7 @@ public class SimpleAgent : IDisposable
         {
             try
             {
-                return (await _llmProvider.CompleteAsync(request, cancellationToken), false);
+                return (await _errorReportingProvider.CompleteAsync(request, cancellationToken), false);
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -2056,7 +2060,7 @@ public class SimpleAgent : IDisposable
         LlmUsage? usage = null;
         var streamedText = false;
 
-        var enumerator = _llmProvider.StreamCompleteAsync(request, cancellationToken)
+        var enumerator = _errorReportingProvider.StreamCompleteAsync(request, cancellationToken)
             .GetAsyncEnumerator(cancellationToken);
         try
         {
@@ -2079,7 +2083,7 @@ public class SimpleAgent : IDisposable
                     // Provider has no streaming path; use the non-streaming call instead.
                     _logger?.LogDebug("Provider {Provider} does not support streaming; falling back to CompleteAsync.",
                         _llmProvider.Name);
-                    return (await _llmProvider.CompleteAsync(request, cancellationToken), false);
+                    return (await _errorReportingProvider.CompleteAsync(request, cancellationToken), false);
                 }
 
                 if (!moved)
@@ -2659,6 +2663,10 @@ public record SimpleAgentResult(
     int TurnCount,
     TimeSpan Duration,
     string StopReason
-);
+)
+{
+    /// <summary>Provider metadata retained independently of human-readable error text.</summary>
+    public Andy.Llm.Errors.LlmProviderError? ProviderError { get; init; }
+}
 
 // Note: ToolCalledEventArgs is defined in ToolCalledEventArgs.cs and shared across scenario runners and SimpleAgent

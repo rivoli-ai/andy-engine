@@ -213,3 +213,10 @@ Contributions are welcome! Please see CONTRIBUTING.md for guidelines.
 ## Support
 
 For issues and questions, please use the GitHub issue tracker.
+
+## 2026-09-07: Structured provider errors
+
+`SimpleAgentResult.ProviderError` retains provider, HTTP status, retry-after and
+bounded message details from Andy.Llm. Provider failures on complete and streaming
+paths are normalized at the provider boundary; cancellation still propagates. The
+existing positional result constructor and deconstruction remain compatible (#61).
