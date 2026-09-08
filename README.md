@@ -220,3 +220,7 @@ For issues and questions, please use the GitHub issue tracker.
 bounded message details from Andy.Llm. Provider failures on complete and streaming
 paths are normalized at the provider boundary; cancellation still propagates. The
 existing positional result constructor and deconstruction remain compatible (#61).
+
+### Pending input between tool rounds (2026-09-08)
+
+Hosts can set `SimpleAgent.PendingInputProvider` before a run to supply a FIFO snapshot of user messages after a complete tool-call round, before the next model request. Input joins the current turn and its transcript, including structured image parts. Pending input is not consumed during parallel tool execution or when a terminal budget stop prevents another request. The host owns edits and removals until the boundary takes its snapshot.
