@@ -295,8 +295,9 @@ public class SimpleAgentMultimodalTests
         Assert.Equal("https://example.com/pic.png", urlImage.ImageUrl);
         Assert.Null(urlImage.ImageData);
 
-        // Re-export is stable: the restored transcript serializes to the same JSON.
-        Assert.Equal(json, restoredAgent.ExportTranscript().ToJson());
+        // Conversation content stays stable while restore records a new activation.
+        Assert.Equal(json, (restoredAgent.ExportTranscript() with { Identity = agent.ExportTranscript().Identity }).ToJson());
+        Assert.Equal("resumed", restoredAgent.Identity.GetSnapshot().History.Last().Kind);
     }
 
     [Fact]
