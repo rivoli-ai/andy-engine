@@ -60,7 +60,7 @@ public sealed record TranscriptSnapshot
 
 /// <summary>
 /// One conversational turn: the opening user/system message, the ordered interleaved
-/// assistant(tool_calls)/tool-result messages, and the final assistant answer (null when the turn
+/// assistant/tool-result/user-follow-up messages, and the final assistant answer (null when the turn
 /// ended without one — max-turns, error, or cancellation).
 /// </summary>
 public sealed record TranscriptTurn
