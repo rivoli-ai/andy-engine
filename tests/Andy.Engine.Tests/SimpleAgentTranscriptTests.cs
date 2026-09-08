@@ -97,8 +97,11 @@ public class SimpleAgentTranscriptTests
         }
         actual.First(m => m.Role == Role.Tool).ToolResults![0].CallId.Should().Be("c1");
 
-        // A second export round-trips identically (stable format).
-        restoredAgent.ExportTranscript().ToJson().Should().Be(json);
+        // Conversation content is stable; activation history records the new runtime.
+        var reexported = restoredAgent.ExportTranscript();
+        (reexported with { Identity = snapshot.Identity }).ToJson().Should().Be(json);
+        reexported.Identity!.AgentId.Should().Be(snapshot.Identity!.AgentId);
+        reexported.Identity.History.Last().Kind.Should().Be("resumed");
     }
 
     [Fact]

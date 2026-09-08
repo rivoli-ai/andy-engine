@@ -62,8 +62,10 @@ public class SimpleAgent : IDisposable
         IReadOnlyDictionary<string, object?>? extraBody = null,
         int maxImageBytes = MultimodalMessage.DefaultMaxImageBytes,
         AgentContinuationPolicy? continuationPolicy = null,
-        bool enablePlanning = false)
+        bool enablePlanning = false,
+        AgentIdentityState? identity = null)
     {
+        Identity = identity ?? new AgentIdentityState();
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
         _errorReportingProvider = new Andy.Llm.Errors.ErrorReportingLlmProvider(_llmProvider);
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
@@ -89,6 +91,8 @@ public class SimpleAgent : IDisposable
     /// <summary>
     /// The conversation manager managing conversation state.
     /// </summary>
+    public AgentIdentityState Identity { get; }
+
     public IConversationManager ConversationManager => _conversationManager;
 
     /// <summary>
@@ -1739,6 +1743,7 @@ public class SimpleAgent : IDisposable
                 args,
                 new ToolExecutionContext
                 {
+                    AgentIdentity = Identity,
                     WorkingDirectory = _workingDirectory,
                     Environment = new Dictionary<string, string>(),
                     CancellationToken = cancellationToken,
@@ -1880,7 +1885,7 @@ public class SimpleAgent : IDisposable
             });
         }
 
-        return new TranscriptSnapshot { Turns = turns, Plan = CurrentPlan };
+        return new TranscriptSnapshot { Turns = turns, Plan = CurrentPlan, Identity = Identity.GetSnapshot() };
     }
 
     /// <summary>
@@ -1904,6 +1909,7 @@ public class SimpleAgent : IDisposable
                 "RestoreTranscript requires an empty conversation; restore into a fresh agent.");
 
         // Validate and materialize EVERYTHING before mutating any agent state.
+        if (snapshot.Identity is { } identitySnapshot) AgentIdentityState.Validate(identitySnapshot);
         var restoredPlan = new AgentPlanState();
         restoredPlan.Restore(snapshot.Plan);
         var restored = new List<Turn>();
@@ -1975,6 +1981,7 @@ public class SimpleAgent : IDisposable
             });
         }
 
+        if (snapshot.Identity is { } identity) Identity.Restore(identity);
         foreach (var turn in restored)
             _conversationManager.AddTurn(turn);
         _planState.Restore(restoredPlan.Current);

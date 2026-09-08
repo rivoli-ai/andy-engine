@@ -7,7 +7,7 @@ namespace Andy.Engine;
 /// <summary>
 /// Versioned, serializable snapshot of a SimpleAgent conversation transcript (issue #32).
 ///
-/// Contains ONLY conversation content — message roles, text, tool-call ids/names/arguments, tool
+/// Contains conversation content and optional agent identity observations — message roles, text, tool-call ids/names/arguments, tool
 /// results, timestamps. Provider clients, API keys, cancellation state, loggers, and tool
 /// executors are structurally excluded: none of them are reachable from this type. Callers that
 /// persist snapshots are responsible for redacting sensitive text the conversation itself may
@@ -31,6 +31,9 @@ public sealed record TranscriptSnapshot
     /// transcripts remain byte-compatible and deserialize without migration.
     /// </summary>
     public AgentPlanSnapshot? Plan { get; init; }
+
+    /// <summary>Optional portable agent identity/history; absent in older snapshots.</summary>
+    public Andy.Tools.Core.AgentIdentitySnapshot? Identity { get; init; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

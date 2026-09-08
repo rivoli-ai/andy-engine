@@ -265,6 +265,7 @@ public class SimpleAgentPlanTests
         restored.RestoreTranscript(snapshot);
 
         restored.CurrentPlan.Should().BeEquivalentTo(original.CurrentPlan);
-        restored.ExportTranscript().ToJson().Should().Be(original.ExportTranscript().ToJson());
+        (restored.ExportTranscript() with { Identity = snapshot.Identity }).ToJson().Should().Be(original.ExportTranscript().ToJson());
+        restored.Identity.GetSnapshot().History.Last().Kind.Should().Be("resumed");
     }
 }

@@ -522,7 +522,8 @@ public class SimpleAgentContinuationTests
             Mock.Of<IToolExecutor>(),
             maxTurns: 1);
         restored.RestoreTranscript(TranscriptSnapshot.FromJson(snapshot.ToJson()));
-        restored.ExportTranscript().ToJson().Should().Be(snapshot.ToJson());
+        (restored.ExportTranscript() with { Identity = snapshot.Identity }).ToJson().Should().Be(snapshot.ToJson());
+        restored.Identity.GetSnapshot().History.Last().Kind.Should().Be("resumed");
     }
 
     [Fact]

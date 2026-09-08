@@ -224,3 +224,13 @@ existing positional result constructor and deconstruction remain compatible (#61
 ### Pending input between tool rounds (2026-09-08)
 
 Hosts can set `SimpleAgent.PendingInputProvider` before a run to supply a FIFO snapshot of user messages after a complete tool-call round, before the next model request. Input joins the current turn and its transcript, including structured image parts. Pending input is not consumed during parallel tool execution or when a terminal budget stop prevents another request. The host owns edits and removals until the boundary takes its snapshot.
+
+### 2026-09-08: Portable agent identity
+
+`SimpleAgent.Identity.SetName("cedar")` names an agent without requiring runtime fields.
+Identity is independent of conversation clearing. Exported transcripts retain the logical ID,
+name, and append-only naming/activation history; restore preserves that history and records a
+fresh activation with the current host's PID, runtime, OS, architecture, and UTC time.
+An empty name clears the label without erasing history. Repeated identical names are no-ops.
+Older transcripts start with a fresh unnamed identity. Every tool context shares this agent's
+identity service, while separate agents remain isolated even within one process.
