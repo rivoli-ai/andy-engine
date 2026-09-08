@@ -103,6 +103,17 @@ public class SimpleAgent : IDisposable
     public event EventHandler<ToolCalledEventArgs>? ToolCalled;
 
     /// <summary>
+    /// Optional host input source, called after a complete tool-call round and before the next
+    /// model request. Configure before starting a run. Return a FIFO snapshot of pending user
+    /// messages, each an ordered list of text/image parts, or an empty list. The host owns
+    /// atomic editing/removal until this callback takes the snapshot. This is never called
+    /// midway through parallel tools, on the initial request, or after a terminal budget stop.
+    /// Accepted messages join the current turn's request context and full transcript.
+    /// </summary>
+    public Func<CancellationToken, Task<IReadOnlyList<IReadOnlyList<MessagePart>>>>? PendingInputProvider { get; set; }
+
+
+    /// <summary>
     /// Structured window/checkpoint lifecycle events. Raised only when an
     /// <see cref="AgentContinuationPolicy"/> was supplied. Event consumers are advisory: an
     /// exception thrown by a subscriber is logged and does not fault the agent run.
@@ -647,6 +658,7 @@ public class SimpleAgent : IDisposable
         // Request-view messages for the current turn-budget window. Continuation replaces this
         // compact view at a boundary; the full audit list below is never replaced or truncated.
         var requestWindowMessages = new List<Message> { userMsg };
+        bool completedToolRound = false;
         // Tracks ALL intermediate messages in order: assistant(tool_calls), tool results, assistant(tool_calls), tool results, ...
         // The final assistant message is NOT included here — it goes in Turn.AssistantMessage
         var allInterleavedMessages = new List<Message>();
@@ -899,6 +911,21 @@ public class SimpleAgent : IDisposable
                     wrapUpNudgeSent = true;
                 }
 
+                // Take host input only after all results in a tool round are recorded and the
+                // budget checks have allowed another model request. A bounded snapshot avoids
+                // starving the model if the host keeps receiving messages during preparation.
+                if (completedToolRound && PendingInputProvider is { } pendingInput)
+                {
+                    runToken.ThrowIfCancellationRequested();
+                    var parts = await pendingInput(runToken);
+                    var messages = parts.Select(p => MultimodalMessage.BuildUserMessage(p, _maxImageBytes)).ToList();
+                    requestWindowMessages.AddRange(messages);
+                    allInterleavedMessages.AddRange(messages);
+                    if (messages.Any(MultimodalMessage.HasImageParts) && !await ProviderAcceptsImagesAsync(runToken))
+                        throw new NotSupportedException($"Provider '{_llmProvider.Name}' cannot deliver pending image input.");
+                }
+                completedToolRound = false;
+
                 // Build tool declarations from registry
                 var toolDeclarations = BuildToolDeclarations();
 
@@ -1040,7 +1067,8 @@ public class SimpleAgent : IDisposable
                         }
                     }
 
-                    // Continue loop to get LLM's response to tool results
+                    completedToolRound = true;
+                    // Continue loop to get LLM's response to tool results and pending user input.
                     continue;
                 }
 
@@ -1850,6 +1878,7 @@ public class SimpleAgent : IDisposable
                 throw new ArgumentException($"Turn {t}: opening message must be 'user' or 'system', got '{turn.User.Role}'.");
 
             var knownCallIds = new HashSet<string>(StringComparer.Ordinal);
+            var pendingCallIds = new HashSet<string>(StringComparer.Ordinal);
             var interleaved = new List<Message>();
             for (var i = 0; i < turn.Interleaved.Count; i++)
             {
@@ -1861,7 +1890,10 @@ public class SimpleAgent : IDisposable
                 {
                     case Role.Assistant:
                         foreach (var tc in msg.ToolCalls)
+                        {
                             knownCallIds.Add(tc.Id);
+                            pendingCallIds.Add(tc.Id);
+                        }
                         break;
                     case Role.Tool:
                         if (msg.ToolResults.Count == 0)
@@ -1871,11 +1903,16 @@ public class SimpleAgent : IDisposable
                             if (!knownCallIds.Contains(tr.CallId))
                                 throw new ArgumentException(
                                     $"Turn {t}, message {i}: tool result '{tr.CallId}' has no preceding tool call in this turn.");
+                            pendingCallIds.Remove(tr.CallId);
                         }
+                        break;
+                    case Role.User:
+                        if (pendingCallIds.Count > 0 || msg.ToolCalls.Count > 0 || msg.ToolResults.Count > 0)
+                            throw new ArgumentException($"Turn {t}, message {i}: pending user input must follow a complete tool round and cannot contain tool calls/results.");
                         break;
                     default:
                         throw new ArgumentException(
-                            $"Turn {t}, message {i}: interleaved messages must be 'assistant' or 'tool', got '{msg.Role}'.");
+                            $"Turn {t}, message {i}: interleaved messages must be 'assistant', 'tool', or 'user', got '{msg.Role}'.");
                 }
 
                 interleaved.Add(msg.ToMessage(role));
