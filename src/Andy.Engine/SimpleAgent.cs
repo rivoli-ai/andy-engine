@@ -278,6 +278,12 @@ public class SimpleAgent : IDisposable
             throw new ArgumentException("MaxTotalTurns must be at least 1.", nameof(options));
         if (options.MaxTotalDuration is { } totalDuration && totalDuration <= TimeSpan.Zero)
             throw new ArgumentException("MaxTotalDuration must be positive.", nameof(options));
+        foreach (var root in options.AdditionalWorkspaceRoots ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Path.IsPathRooted(root))
+                throw new ArgumentException(
+                    $"AdditionalWorkspaceRoots entries must be absolute paths; got '{root}'.", nameof(options));
+        }
 
         // All-or-nothing validation: any widening attempt rejects the whole batch up front.
         var plans = new ChildTaskPlan[tasks.Count];
@@ -348,6 +354,33 @@ public class SimpleAgent : IDisposable
         int MaxTurns,
         TimeSpan? MaxDuration);
 
+    // An absolute workspace widens the parent-directory ceiling, so it is only accepted when the
+    // parent explicitly opted the containing root in via AdditionalWorkspaceRoots.
+    private static string ResolveAbsoluteWorkspace(string workspace, string name, ChildRunOptions options)
+    {
+        var resolved = Path.GetFullPath(workspace)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (resolved.Length == 0)
+            resolved = Path.GetFullPath(workspace);
+
+        foreach (var root in options.AdditionalWorkspaceRoots ?? [])
+        {
+            var normalizedRoot = Path.GetFullPath(root)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (normalizedRoot.Length == 0)
+                continue;
+            var rootWithSeparator = normalizedRoot + Path.DirectorySeparatorChar;
+            if (resolved.Equals(normalizedRoot, StringComparison.Ordinal) ||
+                resolved.StartsWith(rootWithSeparator, StringComparison.Ordinal))
+            {
+                return resolved;
+            }
+        }
+
+        throw new ArgumentException(
+            $"Child task '{name}': absolute Workspace '{workspace}' is not inside any AdditionalWorkspaceRoots entry.");
+    }
+
     private ChildTaskPlan BuildChildPlan(ChildTask task, int taskIndex, ChildRunOptions options)
     {
         ArgumentNullException.ThrowIfNull(task);
@@ -357,7 +390,8 @@ public class SimpleAgent : IDisposable
         if (string.IsNullOrWhiteSpace(task.Objective))
             throw new ArgumentException($"Child task '{name}' has an empty objective.");
 
-        // Workspace ceiling: a relative subpath resolving inside the parent working directory.
+        // Workspace ceiling: a relative subpath resolving inside the parent working directory,
+        // or an absolute path inside a parent-declared AdditionalWorkspaceRoots entry.
         // Trailing separators are trimmed so a parent dir like "/repo/" compares equal to the
         // separator-free form GetFullPath produces for resolved child paths.
         var parentRoot = Path.GetFullPath(_workingDirectory)
@@ -368,17 +402,21 @@ public class SimpleAgent : IDisposable
         if (!string.IsNullOrEmpty(task.Workspace))
         {
             if (Path.IsPathRooted(task.Workspace))
-                throw new ArgumentException(
-                    $"Child task '{name}': Workspace must be a relative subpath of the parent working directory.");
-            workingDirectory = Path.GetFullPath(Path.Combine(parentRoot, task.Workspace));
-            var rootWithSeparator = parentRoot.EndsWith(Path.DirectorySeparatorChar)
-                ? parentRoot
-                : parentRoot + Path.DirectorySeparatorChar;
-            if (!workingDirectory.Equals(parentRoot, StringComparison.Ordinal) &&
-                !workingDirectory.StartsWith(rootWithSeparator, StringComparison.Ordinal))
             {
-                throw new ArgumentException(
-                    $"Child task '{name}': Workspace '{task.Workspace}' escapes the parent working directory.");
+                workingDirectory = ResolveAbsoluteWorkspace(task.Workspace, name, options);
+            }
+            else
+            {
+                workingDirectory = Path.GetFullPath(Path.Combine(parentRoot, task.Workspace));
+                var rootWithSeparator = parentRoot.EndsWith(Path.DirectorySeparatorChar)
+                    ? parentRoot
+                    : parentRoot + Path.DirectorySeparatorChar;
+                if (!workingDirectory.Equals(parentRoot, StringComparison.Ordinal) &&
+                    !workingDirectory.StartsWith(rootWithSeparator, StringComparison.Ordinal))
+                {
+                    throw new ArgumentException(
+                        $"Child task '{name}': Workspace '{task.Workspace}' escapes the parent working directory.");
+                }
             }
         }
 

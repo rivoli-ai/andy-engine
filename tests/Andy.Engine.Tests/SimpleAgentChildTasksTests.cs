@@ -15,16 +15,21 @@ namespace Andy.Engine.Tests;
 public class SimpleAgentChildTasksTests : IDisposable
 {
     private readonly string _parentDir;
+    private readonly string _lanesDir;
 
     public SimpleAgentChildTasksTests()
     {
-        _parentDir = Path.Combine(Path.GetTempPath(), "child-agents-" + Guid.NewGuid().ToString("N"));
+        var suffix = Guid.NewGuid().ToString("N");
+        _parentDir = Path.Combine(Path.GetTempPath(), "child-agents-" + suffix);
+        _lanesDir = Path.Combine(Path.GetTempPath(), "child-agents-lanes-" + suffix);
         Directory.CreateDirectory(_parentDir);
+        Directory.CreateDirectory(_lanesDir);
     }
 
     public void Dispose()
     {
         try { Directory.Delete(_parentDir, recursive: true); } catch (IOException) { }
+        try { Directory.Delete(_lanesDir, recursive: true); } catch (IOException) { }
         GC.SuppressFinalize(this);
     }
 
@@ -226,6 +231,92 @@ public class SimpleAgentChildTasksTests : IDisposable
         {
             new ChildTask { Objective = "escape attempt", Workspace = Path.GetTempPath() },
         }));
+    }
+
+    [Fact]
+    public async Task AbsoluteWorkspace_InsideDeclaredRoot_IsAccepted()
+    {
+        var contexts = new List<ToolExecutionContext>();
+        var executor = SucceedingExecutor(contexts);
+
+        // One tool call, then finish — so the executor observes the child's working directory.
+        var turn = 0;
+        var provider = new Mock<ILlmProvider>();
+        provider.Setup(p => p.CompleteAsync(It.IsAny<LlmRequest>(), It.IsAny<CancellationToken>()))
+            .Returns((LlmRequest _, CancellationToken _) => Task.FromResult(
+                Interlocked.Increment(ref turn) == 1
+                    ? new LlmResponse
+                    {
+                        AssistantMessage = new Message
+                        {
+                            Role = Role.Assistant,
+                            Content = "",
+                            ToolCalls = new List<ToolCall>
+                            {
+                                new() { Id = "call_1", Name = "alpha", ArgumentsJson = "{}" },
+                            },
+                        },
+                    }
+                    : new LlmResponse
+                    {
+                        AssistantMessage = new Message { Role = Role.Assistant, Content = "done" },
+                    }));
+
+        var workspace = Path.Combine(_lanesDir, "wt1");
+        var parent = NewParent(provider.Object, executor: executor);
+        var report = await parent.RunChildTasksAsync(
+            new[] { new ChildTask { Name = "laned", Objective = "work in worktree", Workspace = workspace } },
+            new ChildRunOptions { AdditionalWorkspaceRoots = new[] { _lanesDir } });
+
+        Assert.Equal(ChildTaskStatus.Succeeded, Assert.Single(report.Results).Status);
+        var expectedDir = Path.GetFullPath(workspace);
+        Assert.True(Directory.Exists(expectedDir));
+        Assert.Equal(expectedDir, Assert.Single(contexts).WorkingDirectory);
+    }
+
+    [Fact]
+    public async Task AbsoluteWorkspace_EqualToDeclaredRoot_IsAccepted()
+    {
+        var parent = NewParent(FinalAnswerProvider("done").Object);
+        var report = await parent.RunChildTasksAsync(
+            new[] { new ChildTask { Name = "root", Objective = "work", Workspace = _lanesDir } },
+            new ChildRunOptions { AdditionalWorkspaceRoots = new[] { _lanesDir } });
+
+        Assert.Equal(ChildTaskStatus.Succeeded, Assert.Single(report.Results).Status);
+    }
+
+    [Fact]
+    public async Task AbsoluteWorkspace_OutsideDeclaredRoots_RejectsBatch()
+    {
+        var provider = FinalAnswerProvider("done");
+        var parent = NewParent(provider.Object);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => parent.RunChildTasksAsync(
+            new[] { new ChildTask { Objective = "elsewhere", Workspace = Path.GetTempPath() } },
+            new ChildRunOptions { AdditionalWorkspaceRoots = new[] { _lanesDir } }));
+
+        provider.Verify(p => p.CompleteAsync(It.IsAny<LlmRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task AbsoluteWorkspace_EscapingDeclaredRootViaDotDot_RejectsBatch()
+    {
+        var parent = NewParent(FinalAnswerProvider("done").Object);
+        var escaping = Path.Combine(_lanesDir, "wt1", "..", "..", "outside");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => parent.RunChildTasksAsync(
+            new[] { new ChildTask { Objective = "escape attempt", Workspace = escaping } },
+            new ChildRunOptions { AdditionalWorkspaceRoots = new[] { _lanesDir } }));
+    }
+
+    [Fact]
+    public async Task RelativeAdditionalWorkspaceRoot_RejectsOptions()
+    {
+        var parent = NewParent(FinalAnswerProvider("done").Object);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => parent.RunChildTasksAsync(
+            new[] { new ChildTask { Objective = "task" } },
+            new ChildRunOptions { AdditionalWorkspaceRoots = new[] { "../lanes" } }));
     }
 
     [Fact]

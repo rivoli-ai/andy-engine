@@ -26,9 +26,11 @@ public sealed record ChildTask
     public string? RoleInstructions { get; init; }
 
     /// <summary>
-    /// Working directory for the child as a RELATIVE subpath of the parent's working directory.
-    /// Null means the parent's working directory itself. Absolute paths and paths escaping the
-    /// parent directory are rejected up front.
+    /// Working directory for the child. A RELATIVE value is a subpath of the parent's working
+    /// directory; paths escaping it are rejected up front. An ABSOLUTE value is accepted only
+    /// when it falls inside one of <see cref="ChildRunOptions.AdditionalWorkspaceRoots"/>
+    /// (for example a git worktree the parent created); otherwise it is rejected up front.
+    /// Null means the parent's working directory itself.
     /// </summary>
     public string? Workspace { get; init; }
 
@@ -81,6 +83,15 @@ public sealed record ChildRunOptions
     /// <see cref="ChildTask.ProviderName"/>. Null means children always use the parent's provider.
     /// </summary>
     public IReadOnlyDictionary<string, ILlmProvider>? ChildProviders { get; init; }
+
+    /// <summary>
+    /// Absolute directories outside the parent's working directory (typically git worktrees of
+    /// the same repository) that children may use as workspaces via an absolute
+    /// <see cref="ChildTask.Workspace"/>. Null keeps the ceiling at the parent working directory
+    /// subtree. Because the parent supplies these per batch, a child still cannot widen its own
+    /// workspace; entries must be absolute paths.
+    /// </summary>
+    public IReadOnlyList<string>? AdditionalWorkspaceRoots { get; init; }
 }
 
 /// <summary>Terminal state of one child task.</summary>
