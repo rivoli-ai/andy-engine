@@ -39,6 +39,28 @@ planner/critic layer — the loop mirrors the pattern used by successful CLI age
 - **Optional structured planning** — enable `update_plan` and subscribe to typed plan snapshots
   as multi-step work moves from pending to active to completed.
 
+## MCP tools
+
+Applications can add `Andy.Tools.Mcp` (verified with `2026.9.9-rc.105`) and call
+`services.AddMcpTools(...)` alongside `services.AddAndyTools()`. Start the application's
+host before running the agent so the MCP connection manager and tool registrar discover
+remote tools. Pass the same DI `IToolRegistry` and `IToolExecutor` to `SimpleAgent`;
+registered MCP tools are declared to the model and executed through the standard tool path.
+
+MCP annotations do not grant permission. Destructive tools still require explicit host
+permission; the default agent context rejects them. The adapter preserves protocol results
+in execution metadata, while `SimpleAgent` feeds its normal text/data result envelope to
+the model. Resource, prompt and task APIs are available through the MCP client separately.
+
+### MCP integration verification — 2026-09-09
+
+- [x] Discover a real MCP server tool through the published shared registrar.
+- [x] Declare and execute the tool through `SimpleAgent`, the standard registry and executor.
+- [x] Return the remote result to the model and record successful execution statistics.
+- [x] Deny destructive remote calls without explicit permission and unregister on shutdown.
+
+The deterministic scenarios in `tests/Andy.Engine.Tests/Mcp` run without an external LLM.
+
 ## Installation
 
 ```bash
