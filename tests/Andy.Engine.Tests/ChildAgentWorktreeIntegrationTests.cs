@@ -16,69 +16,13 @@ namespace Andy.Engine.Tests;
 /// sibling worktree through the real registry and executor, and a child agent whose Workspace
 /// is that absolute path - opted in via ChildRunOptions.AdditionalWorkspaceRoots - executes a
 /// real git tool inside it. The LLM is scripted; everything below it is production wiring.
+///
+/// Tool capability comes from SimpleAgent's toolPermissions grant (issue #72): the parent
+/// declares what its tools may do, children inherit that grant, and without one the engine's
+/// fail-closed default refuses process-executing tools.
 /// </summary>
 public class ChildAgentWorktreeIntegrationTests : IDisposable
 {
-    /// <summary>
-    /// Host-style capability grant. SimpleAgent builds its ToolExecutionContext without
-    /// Permissions, and ToolPermissions defaults ProcessExecution to false, so every
-    /// process-executing tool (all git tools) is refused through a raw executor. Real hosts
-    /// solve this with an executor decorator that grants capabilities and enforces consent in
-    /// their own permission layer (see andy-cli's UiUpdatingToolExecutor.GrantGatedCapabilities);
-    /// this decorator is the minimal test-side equivalent.
-    /// </summary>
-    private sealed class CapabilityGrantingExecutor : IToolExecutor
-    {
-        private readonly IToolExecutor _inner;
-
-        public CapabilityGrantingExecutor(IToolExecutor inner) => _inner = inner;
-
-        private static void Grant(ToolExecutionContext context)
-        {
-            context.Permissions.FileSystemAccess = true;
-            context.Permissions.NetworkAccess = true;
-            context.Permissions.ProcessExecution = true;
-            context.Permissions.EnvironmentAccess = true;
-        }
-
-        public Task<ToolExecutionResult> ExecuteAsync(ToolExecutionRequest request)
-        {
-            Grant(request.Context);
-            return _inner.ExecuteAsync(request);
-        }
-
-        public Task<ToolExecutionResult> ExecuteAsync(string toolId, Dictionary<string, object?> parameters, ToolExecutionContext? context = null)
-        {
-            context ??= new ToolExecutionContext();
-            Grant(context);
-            return _inner.ExecuteAsync(toolId, parameters, context);
-        }
-
-        public Task<IList<string>> ValidateExecutionRequestAsync(ToolExecutionRequest request) => _inner.ValidateExecutionRequestAsync(request);
-        public Task<ToolResourceUsage?> EstimateResourceUsageAsync(string toolId, Dictionary<string, object?> parameters) => _inner.EstimateResourceUsageAsync(toolId, parameters);
-        public Task<int> CancelExecutionsAsync(string correlationId) => _inner.CancelExecutionsAsync(correlationId);
-        public IReadOnlyList<RunningExecutionInfo> GetRunningExecutions() => _inner.GetRunningExecutions();
-        public ToolExecutionStatistics GetStatistics() => _inner.GetStatistics();
-
-        public event EventHandler<ToolExecutionStartedEventArgs>? ExecutionStarted
-        {
-            add => _inner.ExecutionStarted += value;
-            remove => _inner.ExecutionStarted -= value;
-        }
-
-        public event EventHandler<ToolExecutionCompletedEventArgs>? ExecutionCompleted
-        {
-            add => _inner.ExecutionCompleted += value;
-            remove => _inner.ExecutionCompleted -= value;
-        }
-
-        public event EventHandler<SecurityViolationEventArgs>? SecurityViolation
-        {
-            add => _inner.SecurityViolation += value;
-            remove => _inner.SecurityViolation -= value;
-        }
-    }
-
     private readonly string _repoDir;
     private readonly string _lanesDir;
     private readonly bool _gitAvailable;
@@ -112,7 +56,7 @@ public class ChildAgentWorktreeIntegrationTests : IDisposable
         _serviceProvider = services.BuildServiceProvider();
         _serviceProvider.GetRequiredService<IToolLifecycleManager>().InitializeAsync().GetAwaiter().GetResult();
         _registry = _serviceProvider.GetRequiredService<IToolRegistry>();
-        _executor = new CapabilityGrantingExecutor(_serviceProvider.GetRequiredService<IToolExecutor>());
+        _executor = _serviceProvider.GetRequiredService<IToolExecutor>();
     }
 
     public void Dispose()
@@ -200,23 +144,12 @@ public class ChildAgentWorktreeIntegrationTests : IDisposable
         Assert.True(File.Exists(Path.Combine(path, ".git")));
     }
 
-    [Fact]
-    public async Task ChildAgent_ExecutesRealGitToolInsideWorktree()
+    /// <summary>
+    /// Scripted provider: first turn calls git_status, second turn reads the tool result and
+    /// finishes. Requests are captured so tests can inspect what the tool reported.
+    /// </summary>
+    private static Mock<ILlmProvider> GitStatusThenDoneProvider(List<LlmRequest> requests)
     {
-        if (!_gitAvailable)
-        {
-            return;
-        }
-
-        var worktree = await CreateWorktreeAsync("lane-child", "feature/lane-child");
-
-        // A file only the worktree has, so the observed status is provably from the worktree
-        // and not from the parent repository checkout.
-        File.WriteAllText(Path.Combine(worktree, "only-in-worktree.txt"), "x\n");
-
-        // Scripted provider: first turn calls git_status, second turn reads the tool result and
-        // finishes. The requests are captured so the test can inspect what the tool reported.
-        var requests = new List<LlmRequest>();
         var turn = 0;
         var provider = new Mock<ILlmProvider>();
         provider.Setup(p => p.CompleteAsync(It.IsAny<LlmRequest>(), It.IsAny<CancellationToken>()))
@@ -245,6 +178,25 @@ public class ChildAgentWorktreeIntegrationTests : IDisposable
                         AssistantMessage = new Message { Role = Role.Assistant, Content = "done" },
                     });
             });
+        return provider;
+    }
+
+    [Fact]
+    public async Task ChildAgent_ExecutesRealGitToolInsideWorktree()
+    {
+        if (!_gitAvailable)
+        {
+            return;
+        }
+
+        var worktree = await CreateWorktreeAsync("lane-child", "feature/lane-child");
+
+        // A file only the worktree has, so the observed status is provably from the worktree
+        // and not from the parent repository checkout.
+        File.WriteAllText(Path.Combine(worktree, "only-in-worktree.txt"), "x\n");
+
+        var requests = new List<LlmRequest>();
+        var provider = GitStatusThenDoneProvider(requests);
 
         var parent = new SimpleAgent(
             provider.Object,
@@ -252,7 +204,8 @@ public class ChildAgentWorktreeIntegrationTests : IDisposable
             _executor,
             systemPrompt: "parent system",
             maxTurns: 5,
-            workingDirectory: _repoDir);
+            workingDirectory: _repoDir,
+            toolPermissions: new ToolPermissions { ProcessExecution = true });
 
         var report = await parent.RunChildTasksAsync(
             new[]
@@ -276,6 +229,48 @@ public class ChildAgentWorktreeIntegrationTests : IDisposable
         var toolRoundText = string.Join("\n", requests[1].Messages.Select(m => m.Content));
         Assert.Contains("feature/lane-child", toolRoundText);
         Assert.Contains("only-in-worktree.txt", toolRoundText);
+    }
+
+    [Fact]
+    public async Task ChildAgent_WithoutToolPermissionsGrant_ToolIsRefused()
+    {
+        if (!_gitAvailable)
+        {
+            return;
+        }
+
+        var worktree = await CreateWorktreeAsync("lane-nogrant", "feature/lane-nogrant");
+
+        var requests = new List<LlmRequest>();
+        var provider = GitStatusThenDoneProvider(requests);
+
+        // No toolPermissions: the engine's fail-closed default applies and the child's
+        // process-executing tool call must be refused, not silently executed.
+        var parent = new SimpleAgent(
+            provider.Object,
+            _registry,
+            _executor,
+            systemPrompt: "parent system",
+            maxTurns: 5,
+            workingDirectory: _repoDir);
+
+        var report = await parent.RunChildTasksAsync(
+            new[]
+            {
+                new ChildTask
+                {
+                    Name = "nogrant",
+                    Objective = "report the status of your workspace",
+                    Workspace = worktree,
+                    AllowedTools = new[] { "git_status" },
+                },
+            },
+            new ChildRunOptions { AdditionalWorkspaceRoots = new[] { _lanesDir } });
+
+        Assert.Equal(ChildTaskStatus.Succeeded, Assert.Single(report.Results).Status);
+        var toolRoundText = string.Join("\n", requests[1].Messages.Select(m => m.Content));
+        Assert.Contains("Insufficient permissions", toolRoundText);
+        Assert.DoesNotContain("feature/lane-nogrant", toolRoundText);
     }
 
     [Fact]

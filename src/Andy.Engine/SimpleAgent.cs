@@ -35,6 +35,7 @@ public class SimpleAgent : IDisposable
     private readonly IContextCompressor _contextCompressor;
     private readonly bool _enablePromptCaching;
     private readonly string _workingDirectory;
+    private readonly ToolPermissions? _toolPermissions;
     private readonly IReadOnlyDictionary<string, object?>? _extraBody;
     private readonly int _maxImageBytes;
     private readonly AgentContinuationPolicy? _continuationPolicy;
@@ -63,7 +64,8 @@ public class SimpleAgent : IDisposable
         int maxImageBytes = MultimodalMessage.DefaultMaxImageBytes,
         AgentContinuationPolicy? continuationPolicy = null,
         bool enablePlanning = false,
-        AgentIdentityState? identity = null)
+        AgentIdentityState? identity = null,
+        ToolPermissions? toolPermissions = null)
     {
         Identity = identity ?? new AgentIdentityState();
         _llmProvider = llmProvider ?? throw new ArgumentNullException(nameof(llmProvider));
@@ -83,6 +85,11 @@ public class SimpleAgent : IDisposable
         _continuationPolicy = continuationPolicy;
         _enablePlanning = enablePlanning;
         _workingDirectory = workingDirectory ?? Environment.CurrentDirectory;
+        // Capability grant for every tool this agent (and its children) executes. Null keeps the
+        // ToolPermissions defaults, under which process-executing tools are refused - hosts that
+        // want them either pass a grant here or decorate the executor (as andy-cli does). This is
+        // a capability ceiling, not a consent layer: interactive approval stays with the host.
+        _toolPermissions = toolPermissions;
         _logger = logger;
         _ownsConversationManager = conversationManager is null;
         _conversationManager = conversationManager ?? new DefaultConversationManager();
@@ -549,7 +556,10 @@ public class SimpleAgent : IDisposable
                 maxContextTokens: _maxContextTokens,
                 enablePromptCaching: _enablePromptCaching,
                 extraBody: _extraBody,
-                maxImageBytes: _maxImageBytes);
+                maxImageBytes: _maxImageBytes,
+                // Children inherit the parent's capability grant verbatim; a child can narrow its
+                // tool surface via AllowedTools but can never hold a wider grant than its parent.
+                toolPermissions: _toolPermissions);
 
             child.ToolCalled += (_, e) => emit(new ChildAgentEvent
             {
@@ -1747,7 +1757,9 @@ public class SimpleAgent : IDisposable
                     WorkingDirectory = _workingDirectory,
                     Environment = new Dictionary<string, string>(),
                     CancellationToken = cancellationToken,
-                    ResourceLimits = resourceLimits
+                    ResourceLimits = resourceLimits,
+                    // Cloned per call so a tool mutating its context cannot widen later calls.
+                    Permissions = _toolPermissions?.Clone() ?? new ToolPermissions()
                 }
             );
 
